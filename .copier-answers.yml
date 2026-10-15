@@ -1,0 +1,26 @@
+# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
+_commit: 0.1.19
+_src_path: /home/galen.lynch/Documents/Code/aind-python-copier-template
+author_email: galen@galenlynch.com
+author_fullname: Galen Lynch
+auto_setup_repo: true
+current_year: '2026'
+github_org: AllenNeuralDynamics
+github_url: https://github.com/AllenNeuralDynamics/aind-lightsheet-registration
+include_claude_md: true
+include_cli: false
+include_commitizen: true
+include_docs: false
+include_notebooks: false
+include_type_hints: true
+institute_name: Allen Institute for Neural Dynamics
+license: MIT
+project_description: Register cleared light-sheet brains to a template and on to CCF
+project_name: AIND light-sheet registration
+project_slug: aind-lightsheet-registration
+publish_to_pypi: false
+python_package_import_name: aind_lightsheet_registration
+python_version: '3.11'
+target_python_version: '3.13'
+workflow_source: AllenNeuralDynamics/galen-uv-workflows
+workflow_version: v2

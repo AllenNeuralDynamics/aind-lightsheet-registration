@@ -1,0 +1,86 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aind-lightsheet-registration"
+description = "Register cleared light-sheet brains to a template and on to CCF"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+  { name = "Allen Institute for Neural Dynamics" },
+  { name = "Galen Lynch", email = "galen@galenlynch.com" },
+]
+classifiers = ["Programming Language :: Python :: 3"]
+readme = "README.md"
+version = "0.1.0"
+
+dependencies = [
+]
+
+[project.urls]
+Repository = "https://github.com/AllenNeuralDynamics/aind-lightsheet-registration/"
+Issues = "https://github.com/AllenNeuralDynamics/aind-lightsheet-registration/issues"
+Changelog = "https://github.com/AllenNeuralDynamics/aind-lightsheet-registration/blob/main/CHANGELOG.md"
+
+[dependency-groups]
+types = ["mypy"]
+dev = [{ include-group = "types" }, "codespell", "pytest", "pytest-cov", "ruff", "interrogate"]
+jupyter = [{ include-group = "dev" }, "ipykernel", "pip"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aind_lightsheet_registration"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["scratch"]
+
+[tool.ruff.lint]
+extend-select = ["Q", "RUF100", "C90", "I", "F", "E", "W", "D", "UP", "ANN", "PYI"]
+extend-ignore = ["ANN401"]  # Skip self/cls type annotations
+per-file-ignores = { "tests/*.py" = ["ANN", "D"] }
+mccabe = { max-complexity = 14 }
+pydocstyle = { convention = "numpy" }
+
+[tool.codespell]
+skip = ".git,*.pdf,*.svg,./docs/build,uv.lock,scratch"
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers --tb=short --cov=src --cov-report=term-missing --cov-fail-under=0"
+testpaths = ["tests"]
+
+[tool.interrogate]
+ignore-init-method = true
+ignore-magic = true
+ignore_module = true
+fail-under = 30
+exclude = [
+  "__init__.py",
+  "tests",
+  "docs",
+  "build",
+  "examples",
+  "site",
+  "scratch",
+  ".venv",
+]
+
+[tool.commitizen]
+version_provider = "pep621"
+update_changelog_on_bump = true
+tag_format = "v$version"
+major_version_zero = true
+
+
+[tool.mypy]
+files = ["src/aind_lightsheet_registration"]
+strict = true
+show_error_codes = true
+exclude = ["scratch"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+
