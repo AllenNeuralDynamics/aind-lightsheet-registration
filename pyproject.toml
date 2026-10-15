@@ -16,6 +16,10 @@ readme = "README.md"
 version = "0.1.0"
 
 dependencies = [
+    "aind-zarr-utils>=0.17,<0.18",
+    "numpy>=2,<3",
+    "ome-zarr>=0.7",
+    "simpleitk>=2,<3",
 ]
 
 [project.urls]
@@ -25,7 +29,15 @@ Changelog = "https://github.com/AllenNeuralDynamics/aind-lightsheet-registration
 
 [dependency-groups]
 types = ["mypy"]
-dev = [{ include-group = "types" }, "codespell", "pytest", "pytest-cov", "ruff", "interrogate"]
+dev = [
+    { include-group = "types" },
+    "codespell",
+    "pytest",
+    "pytest-cov",
+    "ruff",
+    "interrogate",
+    "zarr>=3.1.6",
+]
 jupyter = [{ include-group = "dev" }, "ipykernel", "pip"]
 
 [tool.hatch.build.targets.wheel]
@@ -78,9 +90,19 @@ files = ["src/aind_lightsheet_registration"]
 strict = true
 show_error_codes = true
 exclude = ["scratch"]
+# SimpleITK ships no type stubs, so every call into it is untyped.
+disallow_untyped_calls = false
+
+[[tool.mypy.overrides]]
+module = "ome_zarr.*"
+ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "tests.*"
 disallow_untyped_defs = false
 disallow_incomplete_defs = false
 
+[tool.uv]
+# antspyx 0.6.0-0.6.1 cap scipy below 1.16 but not numpy, so without this floor a universal lock pairs them with
+# numpy 2.5 and backtracks to scipy 1.6.1 and scikit-image 0.19.3, which no longer build.
+constraint-dependencies = ["antspyx>=0.6.2"]
