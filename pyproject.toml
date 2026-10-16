@@ -13,7 +13,7 @@ authors = [
 ]
 classifiers = ["Programming Language :: Python :: 3"]
 readme = "README.md"
-version = "0.1.0"
+version = "0.2.0"
 
 dependencies = [
     "aind-zarr-utils>=0.17.2,<0.18",
