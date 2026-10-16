@@ -55,6 +55,18 @@ class TestBrainMask:
         assert mask.GetPixelID() == sitk.sitkUInt8
         assert np.count_nonzero(sitk.GetArrayFromImage(mask).astype(bool) ^ inside) < 0.001 * inside.sum()
 
+    def test_log_intensity_keeps_dim_tissue_beside_a_bright_structure(self):
+        """A structure far brighter than the rest of the tissue captures a linear threshold but not a log one."""
+        inside = _ellipsoid()
+        bright = _ellipsoid(center=(20, 24, 42), radii=(8, 10, 8))
+        rng = np.random.default_rng(1)
+        values = np.where(bright, 2000.0, np.where(inside, 100.0, 1.0)) * rng.lognormal(0, 0.1, inside.shape)
+        image = _image(values)
+        linear = sitk.GetArrayFromImage(brain_mask(image, log_intensity=False)).astype(bool)
+        logged = sitk.GetArrayFromImage(brain_mask(image)).astype(bool)
+        assert linear.sum() < 0.5 * inside.sum()
+        assert np.count_nonzero(logged ^ inside) < 0.001 * inside.sum()
+
     def test_keeps_only_the_largest_component_and_fills_holes(self, brain):
         image, inside = brain
         values = sitk.GetArrayFromImage(image)

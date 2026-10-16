@@ -28,15 +28,24 @@ def _radius_voxels(image: sitk.Image, radius_mm: float) -> list[int]:
     return [max(0, round(radius_mm / s)) for s in image.GetSpacing()]
 
 
-def brain_mask(image: sitk.Image, *, method: ThresholdMethod = "otsu", closing_radius_mm: float = 0.1) -> sitk.Image:
+def brain_mask(
+    image: sitk.Image,
+    *,
+    method: ThresholdMethod = "otsu",
+    log_intensity: bool = True,
+    closing_radius_mm: float = 0.2,
+) -> sitk.Image:
     """Tissue mask: an automatic threshold, the largest component, a closing, then holes filled.
 
     Parameters
     ----------
     image : sitk.Image
-        Brain image.
+        Brain image with non-negative intensities.
     method : {"otsu", "li", "triangle", "huang"}
         Histogram threshold; clearing protocols differ in which separates tissue from background.
+    log_intensity : bool
+        Threshold ``log(1 + intensity)``. Light-sheet tissue brightness spans orders of magnitude, and on a linear
+        histogram the threshold splits bright structures from dim tissue rather than tissue from background.
     closing_radius_mm : float
         Radius of the closing that bridges gaps in the thresholded tissue.
 
@@ -45,8 +54,11 @@ def brain_mask(image: sitk.Image, *, method: ThresholdMethod = "otsu", closing_r
     sitk.Image
         UInt8 mask, 1 inside the brain.
     """
+    thresholded = sitk.Cast(image, sitk.sitkFloat32)
+    if log_intensity:
+        thresholded = sitk.Log(sitk.Clamp(thresholded, lowerBound=0.0) + 1.0)
     # Histogram thresholds give insideValue to pixels at or below the threshold.
-    tissue = _THRESHOLDS[method](image, 0, 1)
+    tissue = _THRESHOLDS[method](thresholded, 0, 1)
     largest = sitk.RelabelComponent(sitk.ConnectedComponent(tissue), sortByObjectSize=True) == 1
     radius = _radius_voxels(image, closing_radius_mm)
     if any(radius):
