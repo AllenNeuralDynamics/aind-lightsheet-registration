@@ -41,6 +41,7 @@ name = "aind-lightsheet-registration"
 version = "0.2.0"
 source = { editable = "." }
 dependencies = [
+    { name = "aind-registration-utils" },
     { name = "aind-zarr-utils" },
     { name = "numpy" },
     { name = "ome-zarr", version = "0.16.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version <= '3.11'" },
@@ -78,6 +79,7 @@ types = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aind-registration-utils", specifier = ">=0.5,<0.6" },
     { name = "aind-zarr-utils", specifier = ">=0.17.2,<0.18" },
     { name = "numpy", specifier = ">=2,<3" },
     { name = "ome-zarr", specifier = ">=0.7" },
@@ -109,22 +111,24 @@ types = [{ name = "mypy" }]
 
 [[package]]
 name = "aind-registration-utils"
-version = "0.4.2"
+version = "0.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aind-anatomical-utils" },
     { name = "aind-ants-transform-sidecar" },
     { name = "antspyx" },
+    { name = "commandants" },
     { name = "numpy" },
     { name = "pandas" },
+    { name = "pydantic" },
     { name = "scikit-image" },
     { name = "scipy" },
     { name = "simpleitk" },
     { name = "vtk" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a4/c6/32bc388fa52be86c150bfbeb632e0fe5f0aee957d20370d7c53988bdfcd7/aind_registration_utils-0.4.2.tar.gz", hash = "sha256:ce9b6aaf5bc125dce0cb4705009684cff231a79545d3596ebb5c53ca96024fa2", size = 40629, upload-time = "2025-10-30T18:38:20.948Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/06/c9/9edb3e62c09f577d3b06b1ac473ae8aa74be2aa57e8018f7b93e77c24eeb/aind_registration_utils-0.5.0.tar.gz", hash = "sha256:05aa3b3f85558c088572ced8e32413f7267c1994ffb468d87d97dde976d2e151", size = 55578, upload-time = "2026-10-16T00:58:36.345Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b9/98/fd1a2a560b0516cc90a3501023c850e715041117212ec66123154763947e/aind_registration_utils-0.4.2-py3-none-any.whl", hash = "sha256:8f302e4d7b1dda3c16f9a5a01eba9b79873dd23185503209580b7eff69048075", size = 27748, upload-time = "2025-10-30T18:38:19.662Z" },
+    { url = "https://files.pythonhosted.org/packages/3d/44/bee919162605ab28cf35a399d1c4ca56ff009e1f67233a68854d534dd71b/aind_registration_utils-0.5.0-py3-none-any.whl", hash = "sha256:5a3cac23b2f15d470ee739c7588346a32edbb8406bae73f6679b3f0c84f081fb", size = 39722, upload-time = "2026-10-16T00:58:35.456Z" },
 ]
 
 [[package]]
@@ -837,6 +841,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/4c/13/7d740c5849255756bc17888787313b61fd38a0a8304fc4f073dfc46122aa/comm-0.2.3.tar.gz", hash = "sha256:2dc8048c10962d55d7ad693be1e7045d891b7ce8d999c97963a5e3e99c055971", size = 6319, upload-time = "2025-07-25T14:02:04.452Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/60/97/891a0971e1e4a8c5d2b20bbe0e524dc04548d2307fee33cdeba148fd4fc7/comm-0.2.3-py3-none-any.whl", hash = "sha256:c615d91d75f7f04f095b30d1c1711babd43bdc6419c1be9886a85f2f4e489417", size = 7294, upload-time = "2025-07-25T14:02:02.896Z" },
+]
+
+[[package]]
+name = "commandants"
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0a/8c/ffc34a9ef089e5bfac8a031d2f2c9fab4c000becfadb8b15f1821575fb49/commandants-0.3.0.tar.gz", hash = "sha256:ee80c0ace13ce4a6d29bff32cb12f10021943f96386d1bc3b306e47181290e97", size = 121594, upload-time = "2026-09-04T18:22:43.636Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e8/21/47c37c5d8a5eaa4a200e636201a340071bc0d6059de20a2736d77eba9c4d/commandants-0.3.0-py3-none-any.whl", hash = "sha256:480e36983cf534699a7709e2173899b678177f3a842414bdaa5888608d54bd4d", size = 71647, upload-time = "2026-09-04T18:22:42.332Z" },
 ]
 
 [[package]]

@@ -25,7 +25,7 @@ def block_mean(arr: np.ndarray) -> np.ndarray:
     return np.floor(blocks.mean(axis=(-5, -3, -1))).astype(arr.dtype)
 
 
-def write_pyramid(path, base: np.ndarray, n_levels: int) -> list[np.ndarray]:
+def write_pyramid(path, base: np.ndarray, n_levels: int, base_spacing_um=BASE_SPACING_UM) -> list[np.ndarray]:
     """Write a 5D (t, c, z, y, x) OME-Zarr v0.4 pyramid in µm and return its levels."""
     root = zarr.open_group(str(path), mode="w", zarr_format=2)
     levels = [base[np.newaxis, np.newaxis]]
@@ -34,7 +34,7 @@ def write_pyramid(path, base: np.ndarray, n_levels: int) -> list[np.ndarray]:
     datasets = []
     for k, data in enumerate(levels):
         root.create_array(name=str(k), data=data, chunks=(1, 1, 8, 8, 8))
-        scale = [1.0, 1.0, *(s * 2**k for s in BASE_SPACING_UM)]
+        scale = [1.0, 1.0, *(s * 2**k for s in base_spacing_um)]
         datasets.append({"path": str(k), "coordinateTransformations": [{"type": "scale", "scale": scale}]})
     root.attrs["multiscales"] = [
         {
