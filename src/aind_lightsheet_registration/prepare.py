@@ -6,7 +6,6 @@ acquisition frame.
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Literal
@@ -94,14 +93,17 @@ def n4_correct(
     mask: sitk.Image,
     *,
     shrink_factor: int = 2,
-    spline_distance_mm: float = 1.5,
+    final_spline_spacing_mm: float = 1.6,
     iterations: Sequence[int] = (50, 50, 50, 50),
     convergence_threshold: float = 1e-7,
 ) -> sitk.Image:
     """Remove a smooth multiplicative bias field estimated inside ``mask``.
 
     The field is fit on a shrunken copy and evaluated at full size, which costs little accuracy because the
-    field is smooth on the scale of ``spline_distance_mm``.
+    field is smooth on the scale of ``final_spline_spacing_mm``. Each fitting level doubles the B-spline mesh, so the
+    first level's mesh is the final spacing times ``2 ** (levels - 1)``, at least one span per axis. The defaults
+    give one starting span on a mouse brain and about 1.6 mm at the end, as ``aind-ccf-registration`` does; a finer
+    field follows anatomy.
 
     Parameters
     ----------
@@ -111,8 +113,9 @@ def n4_correct(
         UInt8 mask, 1 where the field is fit.
     shrink_factor : int
         Downsampling of the fit.
-    spline_distance_mm : float
-        B-spline control point spacing, which bounds how fast the field can vary.
+    final_spline_spacing_mm : float
+        B-spline span after the last level, which bounds how fast the field can vary. Achieved only approximately,
+        since spans per axis are whole and grow in powers of 2.
     iterations : sequence of int
         Iterations per fitting level; the number of entries is the number of levels.
     convergence_threshold : float
@@ -128,11 +131,12 @@ def n4_correct(
     small = sitk.Shrink(full, shrink)
     small_mask = sitk.Shrink(sitk.Cast(mask, sitk.sitkUInt8), shrink)
     extent_mm = [n * s for n, s in zip(full.GetSize(), full.GetSpacing(), strict=True)]
+    first_spacing_mm = final_spline_spacing_mm * 2 ** (len(iterations) - 1)
     corrector = sitk.N4BiasFieldCorrectionImageFilter()
     corrector.SetMaximumNumberOfIterations([int(i) for i in iterations])
     corrector.SetConvergenceThreshold(convergence_threshold)
-    # A cubic B-spline needs mesh size + order control points per axis, and ITK requires at least 4.
-    corrector.SetNumberOfControlPoints([max(4, math.ceil(e / spline_distance_mm) + 3) for e in extent_mm])
+    # A cubic B-spline has spans + 3 control points per axis.
+    corrector.SetNumberOfControlPoints([max(1, round(e / first_spacing_mm)) + 3 for e in extent_mm])
     corrector.Execute(small, small_mask)
     log_bias = corrector.GetLogBiasFieldAsImage(full)
     corrected: sitk.Image = sitk.Cast(full / sitk.Exp(log_bias), sitk.sitkFloat32)

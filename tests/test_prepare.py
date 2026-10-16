@@ -92,7 +92,7 @@ def test_n4_removes_a_smooth_bias(brain):
     bias = np.exp(0.4 * (x - 28) / 22 + 0.2 * (z - 20) / 14)
     biased = _image(sitk.GetArrayFromImage(image) * bias)
     mask = sitk.Cast(_image(inside), sitk.sitkUInt8)
-    corrected = n4_correct(biased, mask, spline_distance_mm=0.5)
+    corrected = n4_correct(biased, mask, final_spline_spacing_mm=0.2)
 
     def spread(img):
         values = sitk.GetArrayFromImage(img)[inside]
@@ -102,6 +102,23 @@ def test_n4_removes_a_smooth_bias(brain):
     assert spread(corrected) < 0.05
     assert corrected.GetOrigin() == image.GetOrigin()
     assert corrected.GetSpacing() == image.GetSpacing()
+
+
+def test_n4_keeps_a_sharp_step_while_removing_a_gradient():
+    """A field as fine as the phantom's step would flatten it; 0.2 mm on this 1.4 mm phantom is 1.6 mm on a brain."""
+    inside = _ellipsoid()
+    z, _, x = np.indices(inside.shape)
+    step = np.where(x < 28, 1.0, 1.6)
+    values = np.where(inside, 1000.0 * step, 100.0) * np.exp(0.4 * (z - 20) / 14)
+    values += np.random.default_rng(0).normal(0, 30, inside.shape)
+    mask = sitk.Cast(_image(inside), sitk.sitkUInt8)
+    corrected = sitk.GetArrayFromImage(n4_correct(_image(values), mask, final_spline_spacing_mm=0.2))
+
+    def ratio(a, b):
+        return np.median(corrected[inside & b]) / np.median(corrected[inside & a])
+
+    assert ratio((x >= 20) & (x < 26), (x >= 30) & (x < 36)) == pytest.approx(1.6, rel=0.02)
+    assert ratio((z <= 12) & (x < 26), (z >= 28) & (x < 26)) == pytest.approx(1.0, abs=0.05)
 
 
 def test_normalize_percentiles_maps_in_mask_range_to_unit_interval(brain):
