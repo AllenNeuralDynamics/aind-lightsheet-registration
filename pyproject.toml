@@ -16,7 +16,7 @@ readme = "README.md"
 version = "0.1.0"
 
 dependencies = [
-    "aind-zarr-utils>=0.17,<0.18",
+    "aind-zarr-utils>=0.17.2,<0.18",
     "numpy>=2,<3",
     "ome-zarr>=0.7",
     "simpleitk>=2,<3",
@@ -101,8 +101,3 @@ ignore_missing_imports = true
 module = "tests.*"
 disallow_untyped_defs = false
 disallow_incomplete_defs = false
-
-[tool.uv]
-# antspyx 0.6.0-0.6.1 cap scipy below 1.16 but not numpy, so without this floor a universal lock pairs them with
-# numpy 2.5 and backtracks to scipy 1.6.1 and scikit-image 0.19.3, which no longer build.
-constraint-dependencies = ["antspyx>=0.6.2"]

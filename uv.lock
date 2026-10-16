@@ -10,9 +10,6 @@ resolution-markers = [
     "python_full_version <= '3.11'",
 ]
 
-[manifest]
-constraints = [{ name = "antspyx", specifier = ">=0.6.2" }]
-
 [[package]]
 name = "aind-anatomical-utils"
 version = "0.4.3"
@@ -81,7 +78,7 @@ types = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aind-zarr-utils", specifier = ">=0.17,<0.18" },
+    { name = "aind-zarr-utils", specifier = ">=0.17.2,<0.18" },
     { name = "numpy", specifier = ">=2,<3" },
     { name = "ome-zarr", specifier = ">=0.7" },
     { name = "simpleitk", specifier = ">=2,<3" },
@@ -145,7 +142,7 @@ wheels = [
 
 [[package]]
 name = "aind-zarr-utils"
-version = "0.17.1"
+version = "0.17.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aind-anatomical-utils" },
@@ -160,9 +157,9 @@ dependencies = [
     { name = "s3fs" },
     { name = "simpleitk" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b8/91/4583dfc045321c5533ced7017ae538c5a56d25c7f4790fa5ce9b6f654219/aind_zarr_utils-0.17.1.tar.gz", hash = "sha256:8884f0d5bfc03a705f10aefdac1b2844ef458e24a9729b444c5eb5067829e021", size = 459555, upload-time = "2026-08-18T23:18:51.457Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0e/d8/21c4c06fa663ee48a5986ff61623f9148f181a4eb40bc108bffb298bbb4c/aind_zarr_utils-0.17.2.tar.gz", hash = "sha256:f8fa5bf251770b1ff1935a5248b58b6c8178b065bc9374eaa96fc42d5a1df012", size = 460129, upload-time = "2026-10-16T00:04:04.069Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5b/ec/77ca653e6e0d3fc2a8f2be914b6f6eb27f0cee23aa68dfbefec7a21efe79/aind_zarr_utils-0.17.1-py3-none-any.whl", hash = "sha256:38398108cf138a5a1b654876ba35875d432bc890cd3a684d047caa2f464ae732", size = 67361, upload-time = "2026-08-18T23:18:50.486Z" },
+    { url = "https://files.pythonhosted.org/packages/10/4b/1b25876ae196421bf68a183d9c3f296660b20008da37ef6cdccfc3a712d2/aind_zarr_utils-0.17.2-py3-none-any.whl", hash = "sha256:809dc4b5b451199d8553d01066d8002162731bc475e8260bc46cb5768700d18f", size = 67352, upload-time = "2026-10-16T00:04:02.855Z" },
 ]
 
 [[package]]
