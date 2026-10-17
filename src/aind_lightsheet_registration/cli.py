@@ -6,7 +6,7 @@ import json
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import numpy as np
 import SimpleITK as sitk
@@ -85,6 +85,9 @@ class Correct:
     workers: int = 12
     annotated_ap_weights: tuple[float, float] = PIPELINE_AP_WEIGHTS
     """A->P blending of the fusion that annotations were made on, for the point field."""
+    model: Literal["none", "sheet"] = "none"
+    """Illumination model: none, which leaves tile shading in place to match the template, or the full sheet and
+    bleaching model."""
     restitch: bool = False
     """Measure tile offsets again even if offsets.json exists."""
 
@@ -123,16 +126,15 @@ class Correct:
         mask = brain_mask(raw)
         sitk.WriteImage(raw, str(self.out_dir / "fused_raw.nii.gz"))
         sitk.WriteImage(mask, str(self.out_dir / "mask.nii.gz"))
-        mirror = mirror_indices(raw, mask)
-        model = fit_sheet_model(lay, load, offsets, raw, mask, mirror, placement=shift)
-        del mirror
-        model.save(str(self.out_dir / "illumination.npz"))
+        log_gain = None
+        if self.model == "sheet":
+            model = fit_sheet_model(lay, load, offsets, raw, mask, mirror_indices(raw, mask), placement=shift)
+            model.save(str(self.out_dir / "illumination.npz"))
+            log_gain = model.log_illumination
 
-        nominal, _ = fuse_to_reference(lay, load, reference, log_gain=model.log_illumination, shift=shift)
+        nominal, _ = fuse_to_reference(lay, load, reference, log_gain=log_gain, shift=shift)
         sitk.WriteImage(nominal, str(self.out_dir / "fused_nominal.nii.gz"))
-        stitched, _ = fuse_to_reference(
-            lay, load, reference, log_gain=model.log_illumination, offsets=offsets, shift=shift
-        )
+        stitched, _ = fuse_to_reference(lay, load, reference, log_gain=log_gain, offsets=offsets, shift=shift)
         sitk.WriteImage(stitched, str(self.out_dir / "fused_stitched.nii.gz"))
         field = nominal_to_stitched_field(
             lay, offsets, reference, ap_weights=self.annotated_ap_weights, placement=shift
@@ -146,7 +148,7 @@ class Correct:
                     "placement_zyx": shift,
                     "unprotect_finest": self.unprotect_finest,
                     "annotated_ap_weights": self.annotated_ap_weights,
-                    "illumination": model.named,
+                    "model": self.model,
                 },
                 indent=1,
             )
@@ -205,9 +207,10 @@ class MapAnnotations:
 
     def run(self) -> None:
         """Run the step."""
-        import os
+        import fsspec.config
 
-        os.environ.setdefault("FSSPEC_S3_ANON", "true")
+        # fsspec reads FSSPEC_* variables only at import; public data needs anon explicitly or a stale SSO profile fails
+        fsspec.config.conf.setdefault("s3", {}).setdefault("anon", True)
         points = neuroglancer_points_in_brain(
             json.loads(self.neuroglancer.read_text()), self.zarr_uri, json.loads(self.nd_metadata.read_text())
         )

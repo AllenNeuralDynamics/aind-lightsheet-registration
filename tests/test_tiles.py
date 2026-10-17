@@ -1,5 +1,7 @@
 """Tests for the tile layout, stitching, fusion and the nominal-to-stitched field on synthetic mosaics."""
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 import SimpleITK as sitk
@@ -18,6 +20,7 @@ from aind_lightsheet_registration.tiles import TileLayout, choose_tile_level
 SHAPE = (30, 60, 70)  # z, y, x at level 1
 STEP = (48, 56)  # y, x
 PIXEL_UM, Z_UM = 1.8, 2.0
+MARGIN_UM = (12.0, 10.8, 10.8)  # 3 voxels at level 1
 
 
 def _metadata(n_rows=2, n_cols=2):
@@ -86,7 +89,7 @@ def _cut(layout, scene, offsets):
 def test_stitching_recovers_tile_offsets(layout):
     true = dict(zip([t.name for t in layout.tiles], [(0, 0, 0), (1, -1, 1), (-1, 1, 0), (0, 1, -1)], strict=True))
     tiles = _cut(layout, _scene(layout), true)
-    pairs = measure_pairs(layout, lambda t: tiles[t.name])
+    pairs = measure_pairs(layout, lambda t: tiles[t.name], margin_um=MARGIN_UM)
     assert len(pairs) == 4 and not any(p.at_edge for p in pairs)
     offsets = solve_offsets(layout, pairs)
     # fusing undoes each move with the opposite offset; offsets are median-centered
@@ -98,9 +101,29 @@ def test_stitching_recovers_tile_offsets(layout):
 
 def test_unplaceable_tile_is_an_error(layout):
     tiles = _cut(layout, _scene(layout), {t.name: (0, 0, 0) for t in layout.tiles})
-    pairs = [p for p in measure_pairs(layout, lambda t: tiles[t.name]) if layout.tiles[3] not in (p.earlier, p.later)]
+    pairs = [
+        replace(p, correlation=0.1) if layout.tiles[3] in (p.earlier, p.later) else p
+        for p in measure_pairs(layout, lambda t: tiles[t.name], margin_um=MARGIN_UM)
+    ]
     with pytest.raises(ValueError, match="no reliable overlap"):
         solve_offsets(layout, pairs)
+
+
+def test_tile_without_tissue_keeps_its_nominal_position(layout):
+    true = dict(zip([t.name for t in layout.tiles], [(0, 0, 0), (1, -1, 1), (-1, 1, 0), (0, 1, -1)], strict=True))
+    tiles = _cut(layout, _scene(layout), true)
+    empty = layout.tiles[0]
+    pairs = [
+        p
+        for p in measure_pairs(layout, lambda t: tiles[t.name], margin_um=MARGIN_UM)
+        if empty not in (p.earlier, p.later)
+    ]
+    offsets = solve_offsets(layout, pairs)
+    assert offsets[empty.name] == (0.0, 0.0, 0.0)
+    placed = [t.name for t in layout.tiles if t != empty]
+    expected = -np.array([true[k] for k in placed], float)
+    expected -= np.median(expected, axis=0)
+    np.testing.assert_allclose(np.array([offsets[k] for k in placed]), expected, atol=0.25)
 
 
 def test_nominal_fusion_with_gains_reproduces_the_scene(layout):
