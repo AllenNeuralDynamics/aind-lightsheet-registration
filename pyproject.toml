@@ -18,10 +18,20 @@ version = "0.2.0"
 dependencies = [
     "aind-registration-utils>=0.5,<0.6",
     "aind-zarr-utils>=0.17.2,<0.18",
+    "fsspec>=2024.6",
     "numpy>=2,<3",
     "ome-zarr>=0.7",
+    "pywavelets>=1.6",
+    "s3fs>=2024.6",
+    "scikit-image>=0.24",
+    "scipy>=1.13",
     "simpleitk>=2,<3",
+    "tyro>=0.9",
+    "zarr>=3.1",
 ]
+
+[project.scripts]
+lightsheet-registration = "aind_lightsheet_registration.cli:main"
 
 [project.urls]
 Repository = "https://github.com/AllenNeuralDynamics/aind-lightsheet-registration/"
@@ -29,7 +39,10 @@ Issues = "https://github.com/AllenNeuralDynamics/aind-lightsheet-registration/is
 Changelog = "https://github.com/AllenNeuralDynamics/aind-lightsheet-registration/blob/main/CHANGELOG.md"
 
 [dependency-groups]
-types = ["mypy"]
+types = [
+    "mypy",
+    "scipy-stubs>=1.17.1.5",
+]
 dev = [
     { include-group = "types" },
     "codespell",
@@ -58,6 +71,8 @@ pydocstyle = { convention = "numpy" }
 
 [tool.codespell]
 skip = ".git,*.pdf,*.svg,./docs/build,uv.lock,scratch"
+# metadata.nd.json, the AIND asset metadata file
+ignore-words-list = "nd"
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers --tb=short --cov=src --cov-report=term-missing --cov-fail-under=0"
@@ -95,7 +110,7 @@ exclude = ["scratch"]
 disallow_untyped_calls = false
 
 [[tool.mypy.overrides]]
-module = "ome_zarr.*"
+module = ["ome_zarr.*", "pywt", "fsspec", "fsspec.*", "skimage.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

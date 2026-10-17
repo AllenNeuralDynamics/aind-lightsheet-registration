@@ -127,34 +127,68 @@ def prepare_brain(
     PreparedBrain
         Paths of the written files.
     """
+    read = read_level(uri, nd_metadata, target_spacing_mm, compute_kwargs=compute_kwargs)
+    record = {
+        "uri": uri,
+        "level": read.level,
+        "level_spacing_mm": list(read.level_spacings[read.level]),
+        "frame": "LPS, mm; origin at the center of the first full-resolution voxel",
+    }
+    return prepare_image(
+        finish_downsampling(read.image, target_spacing_mm), out_dir, mask_method=mask_method, record=record
+    )
+
+
+def prepare_image(
+    image: sitk.Image,
+    out_dir: Path,
+    *,
+    mask_method: ThresholdMethod = "otsu",
+    record: dict[str, Any] | None = None,
+) -> PreparedBrain:
+    """Mask, bias-correct and normalize a brain already at its working resolution, e.g. a corrected fusion.
+
+    Parameters
+    ----------
+    image : sitk.Image
+        Isotropic brain image; its geometry is kept.
+    out_dir : Path
+        Directory for the outputs; created if missing.
+    mask_method : {"otsu", "li", "triangle", "huang"}
+        Threshold for :func:`~aind_lightsheet_registration.prepare.brain_mask`.
+    record : dict or None
+        Provenance merged into ``front_end.json``.
+
+    Returns
+    -------
+    PreparedBrain
+        Paths of the written files.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     paths = PreparedBrain.in_dir(out_dir)
-    read = read_level(uri, nd_metadata, target_spacing_mm, compute_kwargs=compute_kwargs)
-    downsampled = finish_downsampling(read.image, target_spacing_mm)
+    downsampled = sitk.Cast(image, sitk.sitkFloat32)
     mask = brain_mask(downsampled, method=mask_method)
     corrected = n4_correct(downsampled, mask)
     normalized = normalize_percentiles(corrected, mask)
-    for image, path in [
+    for result, path in [
         (downsampled, paths.downsampled),
         (corrected, paths.corrected),
         (normalized, paths.normalized),
         (mask, paths.mask),
     ]:
-        sitk.WriteImage(image, str(path))
-    record = {
-        "uri": uri,
-        "level": read.level,
-        "level_spacing_mm": list(read.level_spacings[read.level]),
-        "target_spacing_mm": target_spacing_mm,
+        sitk.WriteImage(result, str(path))
+    spacing = downsampled.GetSpacing()[0]
+    full_record = {
+        **(record or {}),
+        "target_spacing_mm": spacing,
         "origin_mm": list(downsampled.GetOrigin()),
         "direction": list(downsampled.GetDirection()),
         "size": list(downsampled.GetSize()),
-        "frame": "LPS, mm; origin at the center of the first full-resolution voxel",
         "mask_method": mask_method,
         "mask_log_intensity": True,
-        "mask_volume_mm3": float(sitk.GetArrayViewFromImage(mask).sum()) * target_spacing_mm**3,
+        "mask_volume_mm3": float(sitk.GetArrayViewFromImage(mask).sum()) * spacing**3,
     }
-    paths.front_end.write_text(json.dumps(record, indent=2) + "\n")
+    paths.front_end.write_text(json.dumps(full_record, indent=2) + "\n")
     return paths
 
 
