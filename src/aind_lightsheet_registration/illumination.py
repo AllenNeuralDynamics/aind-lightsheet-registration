@@ -2,13 +2,15 @@
 
 A tile's dark-subtracted intensity is tissue signal times
 
-    M_t(u, v) = A_side(u) * h_side(v; u) * G_side * exp(-k * dose_t(u, v))
+    M_t(u, v) = A_side(u) * h_side(v; u) * G_t * exp(-k * dose_t(u, v))
 
 with u along the beam (L→R) and v across it (A→P), both in mm from the field's center. ``A_side`` is quadratic in
 log. ``h_side`` is a Gaussian clipped by a soft-edged aperture of half-height H, centered on a line tilted along the
-beam. ``G_side`` is the right/left gain. ``dose`` sums every earlier stack of the channel lit through the same sheet,
-at its relative power, so each tile is bleached by its neighbors' exposures. A radial vignetting term is left out:
-it trades against the quadratic in ``A_side``.
+beam. ``G_t`` is a free gain per tile: the outer columns, where each sheet enters the brain, hold tissue over only
+part of the field, and their brightness relative to the inner columns follows each brain's outline, which a pattern
+shared by every tile on a side cannot describe. ``dose`` sums every earlier stack of the channel lit through the same
+sheet, at its relative power, so each tile is bleached by its neighbors' exposures. A radial vignetting term is left
+out: it trades against the quadratic in ``A_side``.
 
 Three kinds of data constrain it: intensity ratios across tile overlaps, ratios between voxels and their mirror
 across the midline (which differ in which side lit them), and each side's median A→P profile within a tile.
@@ -29,11 +31,13 @@ from aind_lightsheet_registration.stitch import Offsets
 from aind_lightsheet_registration.tiles import Tile, TileLayout
 
 SHEET_PARAMS = ("a1", "a2", "y0", "dy0", "logw", "H", "logsig")
-PARAM_NAMES = tuple(f"{n}_{s}" for s in (0, 1) for n in SHEET_PARAMS) + ("logk", "gain1")
+PARAM_NAMES = tuple(f"{n}_{s}" for s in (0, 1) for n in SHEET_PARAMS) + ("logk",)
 # per tile: ((side, rows back, columns across), summed relative power) over earlier stacks
 History = list[list[tuple[tuple[int, int, int], float]]]
 _TISSUE_FLOOR = 40.0
 _SIG_VOXEL, _SIG_PROFILE = 0.15, 0.02
+# the tile gains' mean is pinned (the overall level is free); a weak prior holds tiles that no overlap or mirror reaches
+_SIG_GAIN_MEAN, _SIG_GAIN_PRIOR = 0.01, 1.0
 
 
 @dataclass
@@ -64,10 +68,13 @@ class SheetModel:
         The grid it was fit to.
     params : numpy.ndarray
         Values in :data:`PARAM_NAMES` order.
+    tile_log_gain : numpy.ndarray
+        ``log G_t`` per tile, in ``layout.tiles`` order.
     """
 
     layout: TileLayout
     params: np.ndarray
+    tile_log_gain: np.ndarray
 
     @property
     def named(self) -> dict[str, float]:
@@ -91,15 +98,16 @@ class SheetModel:
         _, ny, nx = self.layout.shape
         uu, vv = (a.ravel() for a in np.meshgrid((np.arange(nx) + 0.5) * g.px, (np.arange(ny) + 0.5) * g.px))
         tid = np.full(uu.size, self.layout.tiles.index(tile))
-        return _log_m(self.params, g, _history(self.layout), tid, uu, vv).reshape(ny, nx)
+        return _log_m(self.params, self.tile_log_gain, g, _history(self.layout), tid, uu, vv).reshape(ny, nx)
 
     def save(self, path: str) -> None:
-        """Write the parameters and every tile's ``log M`` to an ``.npz``."""
+        """Write the parameters, tile gains and every tile's ``log M`` to an ``.npz``."""
         maps = np.stack([self.log_illumination(t) for t in self.layout.tiles])
         np.savez(
             path,
             params=self.params,
             names=np.array(PARAM_NAMES),
+            tile_log_gain=self.tile_log_gain,
             log_m=maps,
             tiles=np.array([t.name for t in self.layout.tiles]),
         )
@@ -127,12 +135,18 @@ def _log_sheet(q: dict[str, float], s: int, dv: np.ndarray, beam: np.ndarray, cu
 
 
 def _log_m(
-    params: np.ndarray, g: _Geometry, history: History, tid: np.ndarray, u: np.ndarray, v: np.ndarray
+    params: np.ndarray,
+    tile_log_gain: np.ndarray,
+    g: _Geometry,
+    history: History,
+    tid: np.ndarray,
+    u: np.ndarray,
+    v: np.ndarray,
 ) -> np.ndarray:
     q = dict(zip(PARAM_NAMES, params, strict=True))
     uc, vc = u / 1000 - g.cu, v / 1000 - g.cv
     side = np.array([t.side for t in g.layout.tiles])[tid]
-    out = np.where(side == 1, q["gain1"], 0.0)
+    out = np.asarray(tile_log_gain, dtype=float)[tid].copy()
     for s in (0, 1):
         m = side == s
         if m.any():
@@ -368,36 +382,46 @@ def fit_sheet_model(
     grid_v = (np.arange(ny) + 0.5) * g.px
     gu, gv = (a.ravel() for a in np.meshgrid(grid_u, grid_v))
 
-    def model_profile(params: np.ndarray, s: int) -> np.ndarray:
+    n_params, n_tiles = len(PARAM_NAMES), len(layout.tiles)
+    no_gain = np.zeros(n_tiles)
+
+    def model_profile(x: np.ndarray, s: int) -> np.ndarray:  # a tile's gain cancels in its normalized profile
         per_tile = []
         for i in profile_tiles[s]:
-            lm = _log_m(params, g, history, np.full(gu.size, i), gu, gv).reshape(ny, len(grid_u)).mean(axis=1)
+            lm = _log_m(x[:n_params], no_gain, g, history, np.full(gu.size, i), gu, gv)
+            lm = lm.reshape(ny, len(grid_u)).mean(axis=1)
             per_tile.append(lm - np.median(lm[norm]))
         return np.asarray(np.median(np.stack(per_tile), axis=0))
 
-    def pair_pred(params: np.ndarray, d: _Pairs) -> np.ndarray:
-        return np.asarray(_log_m(params, g, history, d.b, d.ub, d.vb) - _log_m(params, g, history, d.a, d.ua, d.va))
+    def pair_pred(x: np.ndarray, d: _Pairs) -> np.ndarray:
+        p, gain = x[:n_params], x[n_params:]
+        return np.asarray(_log_m(p, gain, g, history, d.b, d.ub, d.vb) - _log_m(p, gain, g, history, d.a, d.ua, d.va))
 
-    def raw_residuals(params: np.ndarray) -> list[np.ndarray]:
-        prof = [profiles[s] - model_profile(params, s) for s in sorted(profiles)]
+    def raw_residuals(x: np.ndarray) -> list[np.ndarray]:
+        prof = [profiles[s] - model_profile(x, s) for s in sorted(profiles)]
         return [
-            overlaps.y - pair_pred(params, overlaps),
-            mirrors.y - pair_pred(params, mirrors),
+            overlaps.y - pair_pred(x, overlaps),
+            mirrors.y - pair_pred(x, mirrors),
             np.nan_to_num(np.concatenate(prof)) if prof else np.zeros(0),
         ]
 
-    x0, lo, hi = _initial(g)
+    p0, lo, hi = _initial(g)
+    x0, lo, hi = np.r_[p0, no_gain], np.r_[lo, np.full(n_tiles, -1.5)], np.r_[hi, np.full(n_tiles, 1.5)]
     sizes = [max(1, len(r)) for r in raw_residuals(x0)]
     sigmas = [_SIG_VOXEL, _SIG_VOXEL, _SIG_PROFILE]
     huber = [np.ones(len(r)) for r in raw_residuals(x0)]
     best = x0
     for it in range(4):
 
-        def residuals(params: np.ndarray) -> np.ndarray:
-            parts = zip(raw_residuals(params), sigmas, sizes, huber, strict=True)
-            return np.concatenate([r / sg / np.sqrt(n) * np.sqrt(h) for r, sg, n, h in parts])
+        def residuals(x: np.ndarray) -> np.ndarray:
+            parts = zip(raw_residuals(x), sigmas, sizes, huber, strict=True)
+            gain = x[n_params:]
+            return np.concatenate(
+                [r / sg / np.sqrt(n) * np.sqrt(h) for r, sg, n, h in parts]
+                + [[gain.mean() / _SIG_GAIN_MEAN], gain / _SIG_GAIN_PRIOR / np.sqrt(n_tiles)]
+            )
 
-        fit = least_squares(residuals, best, bounds=(lo, hi), x_scale="jac", max_nfev=200)
+        fit = least_squares(residuals, best, bounds=(lo, hi), x_scale="jac", max_nfev=300)
         best = fit.x
         rr = raw_residuals(best)
         for i in (0, 1):
@@ -407,7 +431,7 @@ def fit_sheet_model(
             f"IRLS {it + 1}: cost {fit.cost:.4f}, nfev {fit.nfev}; overlap MAD {np.median(np.abs(rr[0])):.4f}, "
             f"mirror MAD {np.median(np.abs(rr[1])):.4f}, profile RMS {np.sqrt(np.mean(rr[2] ** 2)):.4f}"
         )
-    model = SheetModel(layout=layout, params=best)
+    model = SheetModel(layout=layout, params=best[:n_params], tile_log_gain=best[n_params:])
     for line in _summary(model, overlaps, mirrors, pair_pred):
         report(line)
     return model
@@ -436,9 +460,15 @@ def _summary(
             f"um, Gaussian w {np.exp(q[f'logw_{s}']):.2f} mm, amplitude log {q[f'a1_{s}']:+.3f} u "
             f"{q[f'a2_{s}']:+.3f} u^2"
         )
-    yield f"bleaching k {np.exp(q['logk']):.3f} per pass; right/left gain {np.exp(q['gain1']):.3f}"
+    yield f"bleaching k {np.exp(q['logk']):.3f} per pass; tile gains, rows down, columns across:"
+    layout = model.layout
+    gains = np.full((layout.n_rows, layout.n_cols), np.nan)
+    for t, lg in zip(layout.tiles, model.tile_log_gain, strict=True):
+        gains[t.row, t.col] = np.exp(lg)
+    for r, row in enumerate(gains):
+        yield f"  row {r + 1}: " + " ".join(f"{v:5.2f}" for v in row)
     for d in (overlaps, mirrors):
-        pred = pair_pred(model.params, d)
+        pred = pair_pred(np.r_[model.params, model.tile_log_gain], d)
         for label in sorted(set(d.label)):
             m = d.label == label
             if m.sum() >= 500:

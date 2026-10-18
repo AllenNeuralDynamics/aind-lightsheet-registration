@@ -70,16 +70,17 @@ def test_history_counts_earlier_exposures_through_each_sheet():
     assert history[3] == [((0, 0, 1), 1.0), ((0, 1, 1), 1.0), ((1, 1, 0), 1.25)]
 
 
-def test_log_illumination_without_bleaching_depends_only_on_side():
+def test_log_illumination_without_bleaching_depends_only_on_side_and_tile_gain():
     q = dict.fromkeys(PARAM_NAMES, 0.0)
     for s in (0, 1):
         q.update({f"logw_{s}": np.log(5.0), f"H_{s}": 1.8, f"logsig_{s}": np.log(0.2), f"a2_{s}": -0.1})
-    q.update(logk=-50.0, gain1=np.log(1.1))
-    model = SheetModel(_layout(), np.array([q[n] for n in PARAM_NAMES]))
+    q.update(logk=-50.0)
+    gains = np.log([1.0, 1.0, 1.0, 1.1])
+    model = SheetModel(_layout(), np.array([q[n] for n in PARAM_NAMES]), gains)
     maps = [model.log_illumination(t) for t in model.layout.tiles]
     assert maps[0].shape == (40, 50)
     np.testing.assert_allclose(maps[2], maps[0], atol=1e-12)
-    np.testing.assert_allclose(maps[1] - maps[0], np.log(1.1), atol=1e-12)
+    np.testing.assert_allclose(maps[3] - maps[1], np.log(1.1), atol=1e-12)
     # a quadratic falloff along the beam, peaked at the field's center
     profile = maps[0][20]
     assert profile[25] > profile[0] and profile[25] > profile[-1]
@@ -90,7 +91,7 @@ def test_bleaching_dims_later_tiles():
     for s in (0, 1):
         q.update({f"logw_{s}": np.log(5.0), f"H_{s}": 1.8, f"logsig_{s}": np.log(0.2)})
     q.update(logk=np.log(0.2))
-    model = SheetModel(_layout(), np.array([q[n] for n in PARAM_NAMES]))
+    model = SheetModel(_layout(), np.array([q[n] for n in PARAM_NAMES]), np.zeros(4))
     first, last = (model.log_illumination(model.layout.tiles[i]) for i in (0, 3))
     assert np.all(last < first)
 
