@@ -7,8 +7,11 @@ brains, as the median high-passed A→P log profile around each seam, and divide
 
 from __future__ import annotations
 
+import json
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 from scipy.ndimage import median_filter
@@ -25,20 +28,49 @@ TAPER_MM = 0.15
 
 @dataclass
 class SeamProfile:
-    """Log gain against A→P distance (mm) from a tile row's anterior edge; zero outside the sampled range."""
+    """Log gain against A→P distance (mm) from a tile row's anterior edge; zero outside the sampled range.
+
+    Valid only for the tile row step and overlap it was calibrated on.
+    """
 
     distance_mm: np.ndarray
     log_gain: np.ndarray
+    step_mm: float
+    overlap_mm: float
+    provenance: dict[str, Any] = field(default_factory=dict)
 
-    def save(self, path: str) -> None:
-        """Write to ``path`` (.npz)."""
-        np.savez(path, distance_mm=self.distance_mm, log_gain=self.log_gain)
+    def save(self, path: Path) -> None:
+        """Write the profile to ``path`` (.tsv) and its validity and provenance to the .json beside it."""
+        rows = "".join(f"{d:.4f}\t{g:.6f}\n" for d, g in zip(self.distance_mm, self.log_gain, strict=True))
+        path.write_text("distance_mm\tlog_gain\n" + rows)
+        sidecar = {
+            "log_gain": "natural log of the multiplicative gain divided out of the fusion",
+            "distance_mm": "A->P distance from a tile row's anterior edge",
+            "step_mm": self.step_mm,
+            "overlap_mm": self.overlap_mm,
+            **self.provenance,
+        }
+        path.with_suffix(".json").write_text(json.dumps(sidecar, indent=1) + "\n")
 
     @classmethod
-    def load(cls, path: str) -> SeamProfile:
+    def load(cls, path: Path) -> SeamProfile:
         """Read a profile written by :meth:`save`."""
-        f = np.load(path)
-        return cls(f["distance_mm"], f["log_gain"])
+        table = np.loadtxt(path, delimiter="\t", skiprows=1, ndmin=2)
+        sidecar = json.loads(path.with_suffix(".json").read_text())
+        step, overlap = sidecar.pop("step_mm"), sidecar.pop("overlap_mm")
+        for key in ("log_gain", "distance_mm"):
+            sidecar.pop(key, None)
+        return cls(table[:, 0], table[:, 1], step, overlap, sidecar)
+
+    def check_layout(self, layout: TileLayout) -> None:
+        """Raise unless ``layout`` has the row step and overlap this profile was calibrated on, to within 1%."""
+        mm = layout.voxel_um[1] / 1000
+        step, overlap = layout.step_px[0] * mm, layout.overlap_px[0] * mm
+        if not (np.isclose(step, self.step_mm, rtol=0.01) and np.isclose(overlap, self.overlap_mm, rtol=0.01)):
+            raise ValueError(
+                f"seam profile calibrated on row step {self.step_mm:.3f} mm, overlap {self.overlap_mm:.3f} mm; "
+                f"these tiles have {step:.3f} mm, {overlap:.3f} mm"
+            )
 
     def along(self, y_mm: np.ndarray, row_starts_mm: np.ndarray) -> np.ndarray:
         """Sum the log gain of rows starting at ``row_starts_mm``, at A→P positions ``y_mm``."""
@@ -79,14 +111,23 @@ def seam_windows(
     return out
 
 
-def estimate_seam_profile(windows: list[np.ndarray], spacing_mm: float) -> SeamProfile:
-    """Median over seam windows from :func:`seam_windows`, tapered to zero at both ends."""
+def estimate_seam_profile(
+    windows: list[np.ndarray], spacing_mm: float, layout: TileLayout, provenance: dict[str, Any] | None = None
+) -> SeamProfile:
+    """Take the median over seam windows from :func:`seam_windows`, tapered to zero, for tiles like ``layout``."""
     g = np.median(np.stack(windows), axis=0)
     n = max(round(TAPER_MM / spacing_mm), 1)
     taper = np.ones(g.size)
     taper[:n] = np.linspace(0, 1, n)
     taper[-n:] = np.linspace(1, 0, n)
-    return SeamProfile(WINDOW_MM[0] + spacing_mm * np.arange(g.size), g * taper)
+    mm = layout.voxel_um[1] / 1000
+    return SeamProfile(
+        WINDOW_MM[0] + spacing_mm * np.arange(g.size),
+        g * taper,
+        layout.step_px[0] * mm,
+        layout.overlap_px[0] * mm,
+        {"window_mm": WINDOW_MM, "highpass_mm": HIGHPASS_MM, "taper_mm": TAPER_MM, **(provenance or {})},
+    )
 
 
 def interior_seam_starts_mm(layout: TileLayout, placement_y_px: int, spacing_mm: float) -> list[float]:

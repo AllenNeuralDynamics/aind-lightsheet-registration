@@ -90,7 +90,7 @@ class Correct:
     """Illumination model: none, which leaves tile shading in place to match the template, or the full sheet and
     bleaching model."""
     seam_profile: Path | None = None
-    """Tile-row seam profile from calibrate-seams, divided out at every seam."""
+    """Tile-row seam profile (.tsv) from calibrate-seams, divided out at every seam."""
     restitch: bool = False
     """Measure tile offsets again even if offsets.json exists."""
 
@@ -135,7 +135,9 @@ class Correct:
             model.save(str(self.out_dir / "illumination.npz"))
             log_gain = model.log_illumination
 
-        seams = SeamProfile.load(str(self.seam_profile)) if self.seam_profile else None
+        seams = SeamProfile.load(self.seam_profile) if self.seam_profile else None
+        if seams is not None:
+            seams.check_layout(lay)
         nominal, _ = fuse_to_reference(lay, load, reference, log_gain=log_gain, shift=shift, seam_profile=seams)
         sitk.WriteImage(nominal, str(self.out_dir / "fused_nominal.nii.gz"))
         stitched, _ = fuse_to_reference(
@@ -174,27 +176,38 @@ class CalibrateSeams:
     corrected_dirs: list[Path]
     """Output directories of correct, without a seam profile."""
     out: Path
-    """Profile to write (.npz)."""
+    """Profile to write (.tsv, with a .json sidecar beside it)."""
 
     def run(self) -> None:
         """Run the step."""
         windows: list[np.ndarray] = []
-        spacing = None
+        spacing, layout = None, None
         for d in self.corrected_dirs:
             record = json.loads((d / "correct.json").read_text())
+            if record.get("model") != "sheet" or record.get("seam_profile"):
+                raise SystemExit(f"{d}: needs correct with the sheet model and no seam profile")
+            lay = TileSet.open(Path(record["tiles_dir"])).layout
+            if layout is not None and (lay.step_px, lay.overlap_px, lay.voxel_um) != (
+                layout.step_px,
+                layout.overlap_px,
+                layout.voxel_um,
+            ):
+                raise SystemExit(f"{d}: tile layout differs from {self.corrected_dirs[0]}")
+            layout = lay
             image = sitk.ReadImage(str(d / "fused_stitched.nii.gz"), sitk.sitkFloat32)
             spacing = image.GetSpacing()[0]
             mask = sitk.GetArrayFromImage(sitk.ReadImage(str(d / "mask.nii.gz"))) > 0
-            starts = interior_seam_starts_mm(
-                TileSet.open(Path(record["tiles_dir"])).layout, record["placement_zyx"][1], spacing
-            )
+            starts = interior_seam_starts_mm(lay, record["placement_zyx"][1], spacing)
             found = seam_windows(sitk.GetArrayFromImage(image), mask, spacing, starts)
             print(f"{d}: {len(found)} of {len(starts)} seams usable", flush=True)
             windows += found
-        if spacing is None or not windows:
+        if spacing is None or layout is None or not windows:
             raise SystemExit("no usable seams")
-        profile = estimate_seam_profile(windows, spacing)
-        profile.save(str(self.out))
+        sources = [json.loads((d / "correct.json").read_text())["tiles_dir"] for d in self.corrected_dirs]
+        profile = estimate_seam_profile(
+            windows, spacing, layout, {"tile_level": layout.level, "n_seams": len(windows), "sources": sources}
+        )
+        profile.save(self.out)
         g = profile.log_gain
         print(f"{self.out}: {len(windows)} seams, log gain range [{g.min():+.3f}, {g.max():+.3f}]")
 
