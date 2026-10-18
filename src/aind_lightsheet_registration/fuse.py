@@ -12,6 +12,7 @@ import SimpleITK as sitk
 from scipy.ndimage import shift as nd_shift
 
 from aind_lightsheet_registration.reader import finish_downsampling
+from aind_lightsheet_registration.seams import SeamProfile, row_starts_mm
 from aind_lightsheet_registration.stitch import Offsets, blend_weights
 from aind_lightsheet_registration.tiles import Tile, TileLayout
 
@@ -23,6 +24,7 @@ def fuse_mosaic(
     log_gain: Callable[[Tile], np.ndarray] | None = None,
     offsets: Offsets | None = None,
     ap_weights: tuple[float, float] | None = None,
+    seam_profile: SeamProfile | None = None,
 ) -> sitk.Image:
     """Blend the tiles at their nominal positions, or moved by ``offsets``.
 
@@ -39,6 +41,8 @@ def fuse_mosaic(
         linear interpolation; None keeps the nominal grid.
     ap_weights : tuple of float or None
         A→P blending; see :func:`~aind_lightsheet_registration.stitch.blend_weights`.
+    seam_profile : SeamProfile or None
+        Calibrated tile-row seam profile, divided out of the blended mosaic at every row's nominal anterior edge.
 
     Returns
     -------
@@ -60,6 +64,9 @@ def fuse_mosaic(
         num[:, y0 : y0 + ny, x0 : x0 + nx] += stack * w
         den[y0 : y0 + ny, x0 : x0 + nx] += w
     num /= np.maximum(den, 1e-6)
+    if seam_profile is not None:
+        y_mm = np.arange(num.shape[1]) * layout.voxel_um[1] / 1000
+        num *= np.exp(-seam_profile.along(y_mm, row_starts_mm(layout))).astype(np.float32)[None, :, None]
     image = sitk.GetImageFromArray(num)
     image.SetSpacing([v / 1000 for v in layout.voxel_um[::-1]])
     return image
@@ -118,12 +125,13 @@ def fuse_to_reference(
     offsets: Offsets | None = None,
     ap_weights: tuple[float, float] | None = None,
     shift: tuple[int, int, int] | None = None,
+    seam_profile: SeamProfile | None = None,
 ) -> tuple[sitk.Image, tuple[int, int, int]]:
     """:func:`fuse_mosaic`, taken to ``reference``'s spacing and placed on its grid.
 
     Parameters
     ----------
-    layout, load, log_gain, offsets, ap_weights
+    layout, load, log_gain, offsets, ap_weights, seam_profile
         As for :func:`fuse_mosaic`.
     reference : sitk.Image
         Brain whose grid the result takes; isotropic.
@@ -135,5 +143,7 @@ def fuse_to_reference(
     tuple
         The placed fusion and its shift (z, y, x).
     """
-    mosaic = fuse_mosaic(layout, load, log_gain=log_gain, offsets=offsets, ap_weights=ap_weights)
+    mosaic = fuse_mosaic(
+        layout, load, log_gain=log_gain, offsets=offsets, ap_weights=ap_weights, seam_profile=seam_profile
+    )
     return place_on_reference(finish_downsampling(mosaic, reference.GetSpacing()[0]), reference, shift=shift)

@@ -24,6 +24,7 @@ from aind_lightsheet_registration.illumination import fit_sheet_model
 from aind_lightsheet_registration.mirror import mirror_indices
 from aind_lightsheet_registration.prepare import brain_mask
 from aind_lightsheet_registration.register import Template, prepare_image, register_to_template
+from aind_lightsheet_registration.seams import SeamProfile, estimate_seam_profile, interior_seam_starts_mm, seam_windows
 from aind_lightsheet_registration.stitch import measure_pairs, nominal_to_stitched_field, solve_offsets, solve_residuals
 from aind_lightsheet_registration.tiles import Tile, TileSet, fetch_tiles
 
@@ -88,6 +89,8 @@ class Correct:
     model: Literal["none", "sheet"] = "none"
     """Illumination model: none, which leaves tile shading in place to match the template, or the full sheet and
     bleaching model."""
+    seam_profile: Path | None = None
+    """Tile-row seam profile from calibrate-seams, divided out at every seam."""
     restitch: bool = False
     """Measure tile offsets again even if offsets.json exists."""
 
@@ -132,9 +135,12 @@ class Correct:
             model.save(str(self.out_dir / "illumination.npz"))
             log_gain = model.log_illumination
 
-        nominal, _ = fuse_to_reference(lay, load, reference, log_gain=log_gain, shift=shift)
+        seams = SeamProfile.load(str(self.seam_profile)) if self.seam_profile else None
+        nominal, _ = fuse_to_reference(lay, load, reference, log_gain=log_gain, shift=shift, seam_profile=seams)
         sitk.WriteImage(nominal, str(self.out_dir / "fused_nominal.nii.gz"))
-        stitched, _ = fuse_to_reference(lay, load, reference, log_gain=log_gain, offsets=offsets, shift=shift)
+        stitched, _ = fuse_to_reference(
+            lay, load, reference, log_gain=log_gain, offsets=offsets, shift=shift, seam_profile=seams
+        )
         sitk.WriteImage(stitched, str(self.out_dir / "fused_stitched.nii.gz"))
         field = nominal_to_stitched_field(
             lay, offsets, reference, ap_weights=self.annotated_ap_weights, placement=shift
@@ -149,11 +155,48 @@ class Correct:
                     "unprotect_finest": self.unprotect_finest,
                     "annotated_ap_weights": self.annotated_ap_weights,
                     "model": self.model,
+                    "seam_profile": str(self.seam_profile) if self.seam_profile else None,
                 },
                 indent=1,
             )
             + "\n"
         )
+
+
+@dataclass
+class CalibrateSeams:
+    """Estimate the tile-row seam profile from several brains run through correct with the sheet model.
+
+    The ripple is a property of the microscope, so one profile serves every brain imaged the same way; pool at least a
+    handful so anatomy at the seams averages out.
+    """
+
+    corrected_dirs: list[Path]
+    """Output directories of correct, without a seam profile."""
+    out: Path
+    """Profile to write (.npz)."""
+
+    def run(self) -> None:
+        """Run the step."""
+        windows: list[np.ndarray] = []
+        spacing = None
+        for d in self.corrected_dirs:
+            record = json.loads((d / "correct.json").read_text())
+            image = sitk.ReadImage(str(d / "fused_stitched.nii.gz"), sitk.sitkFloat32)
+            spacing = image.GetSpacing()[0]
+            mask = sitk.GetArrayFromImage(sitk.ReadImage(str(d / "mask.nii.gz"))) > 0
+            starts = interior_seam_starts_mm(
+                TileSet.open(Path(record["tiles_dir"])).layout, record["placement_zyx"][1], spacing
+            )
+            found = seam_windows(sitk.GetArrayFromImage(image), mask, spacing, starts)
+            print(f"{d}: {len(found)} of {len(starts)} seams usable", flush=True)
+            windows += found
+        if spacing is None or not windows:
+            raise SystemExit("no usable seams")
+        profile = estimate_seam_profile(windows, spacing)
+        profile.save(str(self.out))
+        g = profile.log_gain
+        print(f"{self.out}: {len(windows)} seams, log gain range [{g.min():+.3f}, {g.max():+.3f}]")
 
 
 @dataclass
@@ -223,6 +266,7 @@ class MapAnnotations:
 Command = (
     Annotated[Fetch, tyro.conf.subcommand("fetch")]
     | Annotated[Correct, tyro.conf.subcommand("correct")]
+    | Annotated[CalibrateSeams, tyro.conf.subcommand("calibrate-seams")]
     | Annotated[Register, tyro.conf.subcommand("register")]
     | Annotated[MapAnnotations, tyro.conf.subcommand("map-annotations")]
 )
