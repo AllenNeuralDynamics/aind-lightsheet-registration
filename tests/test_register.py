@@ -12,10 +12,12 @@ from aind_registration_utils.chains import SynTransform, transform_points
 
 from aind_lightsheet_registration.register import (
     SIDECAR_NAME,
+    TEMPLATE_BUILD_SPACING_MM,
     PreparedBrain,
     Template,
     prepare_brain,
     register_to_template,
+    template_build_config,
 )
 from tests.conftest import write_pyramid
 
@@ -88,7 +90,9 @@ def test_register_to_template_recovers_a_shift(tmp_path):
         syn=SynConfig(iterations=[20, 10], shrink_factors=[2, 1], smoothing_sigmas=[1.0, 0.0]),
         random_seed=1,
     )
-    result = register_to_template(brain, template, tmp_path / "reg", config=config, threads=1, ants_path=ANTS_PATH)
+    result = register_to_template(
+        brain, template, tmp_path / "reg", config=config, working_spacing_mm=0.1, threads=1, ants_path=ANTS_PATH
+    )
 
     assert result.sidecar.name == SIDECAR_NAME
     landmarks = np.array(
@@ -96,3 +100,35 @@ def test_register_to_template_recovers_a_shift(tmp_path):
     )
     mapped = transform_points(landmarks, [(SynTransform.from_sidecar(result.sidecar), "fixed_to_moving")])
     np.testing.assert_allclose(mapped, landmarks + shift, atol=0.05)
+
+
+def test_template_build_config_smooths_updates_over_0_1_mm():
+    config = template_build_config()
+    assert config.syn.update_field_variance**0.5 * TEMPLATE_BUILD_SPACING_MM == pytest.approx(0.1)
+    assert config.syn.radius_or_bins * TEMPLATE_BUILD_SPACING_MM == pytest.approx(0.2)
+    assert config.syn.total_field_variance == 0.0
+    assert config.syn.shrink_factors[0] * TEMPLATE_BUILD_SPACING_MM == pytest.approx(1.2)
+    assert config.syn.shrink_factors[-1] == 1 and len(config.syn.iterations) == 7
+
+
+def _write_pair(tmp_path, brain_spacing, template_spacing):
+    template_image, template_mask = _phantom((0.0, 0.0, 0.0), spacing=template_spacing)
+    brain_image, brain_mask = _phantom((0.0, 0.0, 0.0), spacing=brain_spacing)
+    template = Template(tmp_path / "template.nii.gz", tmp_path / "template_mask.nii.gz")
+    sitk.WriteImage(template_image, str(template.image))
+    sitk.WriteImage(template_mask, str(template.mask))
+    brain = PreparedBrain.in_dir(tmp_path / "brain")
+    brain.mask.parent.mkdir()
+    sitk.WriteImage(brain_image, str(brain.normalized))
+    sitk.WriteImage(brain_mask, str(brain.mask))
+    return brain, template
+
+
+@pytest.mark.parametrize(
+    ("brain_spacing", "template_spacing", "message"),
+    [(0.03, 0.05, "whole multiple"), (0.1, 0.05, "whole multiple"), (0.025, 0.1, "template spacing")],
+)
+def test_register_to_template_refuses_mismatched_grids(tmp_path, brain_spacing, template_spacing, message):
+    brain, template = _write_pair(tmp_path, brain_spacing, template_spacing)
+    with pytest.raises(ValueError, match=message):
+        register_to_template(brain, template, tmp_path / "reg")

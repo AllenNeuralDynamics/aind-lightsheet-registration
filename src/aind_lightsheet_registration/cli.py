@@ -22,8 +22,13 @@ from aind_lightsheet_registration.destripe import destripe_stack
 from aind_lightsheet_registration.fuse import fuse_to_reference
 from aind_lightsheet_registration.illumination import fit_sheet_model
 from aind_lightsheet_registration.mirror import mirror_indices
-from aind_lightsheet_registration.prepare import brain_mask
-from aind_lightsheet_registration.register import Template, prepare_image, register_to_template
+from aind_lightsheet_registration.prepare import brain_mask, set_orientation
+from aind_lightsheet_registration.register import (
+    TEMPLATE_BUILD_SPACING_MM,
+    Template,
+    prepare_image,
+    register_to_template,
+)
 from aind_lightsheet_registration.seams import SeamProfile, estimate_seam_profile, interior_seam_starts_mm, seam_windows
 from aind_lightsheet_registration.stitch import measure_pairs, nominal_to_stitched_field, solve_offsets, solve_residuals
 from aind_lightsheet_registration.tiles import Tile, TileSet, fetch_tiles
@@ -220,20 +225,31 @@ class Register:
     """Brain at the working resolution, e.g. fused_nominal.nii.gz."""
     out_dir: Path
     template: Path
+    """Template at ``working_spacing_mm``."""
     template_mask: Path
+    working_spacing_mm: float = TEMPLATE_BUILD_SPACING_MM
+    """Registration grid; the brain is prepared at its own spacing and block-averaged to this."""
+    orientation: str | None = None
+    """Axis code replacing the image's directions, e.g. "LPS" (SimpleITK convention), when its metadata is wrong."""
     threads: int | None = None
     ants_path: Path | None = None
     """Directory holding the ANTs binaries."""
 
     def run(self) -> None:
         """Run the step."""
+        image = sitk.ReadImage(str(self.image))
+        if self.orientation is not None:
+            image = set_orientation(image, self.orientation)
         prepared = prepare_image(
-            sitk.ReadImage(str(self.image)), self.out_dir / "prepared", record={"image": str(self.image)}
+            image,
+            self.out_dir / "prepared",
+            record={"image": str(self.image), "orientation_override": self.orientation},
         )
         result = register_to_template(
             prepared,
             Template(self.template, self.template_mask),
             self.out_dir / "registration",
+            working_spacing_mm=self.working_spacing_mm,
             threads=self.threads,
             ants_path=self.ants_path,
         )

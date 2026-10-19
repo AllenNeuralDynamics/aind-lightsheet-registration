@@ -13,7 +13,9 @@ from typing import Any
 
 import SimpleITK as sitk
 from aind_registration_utils.ants_cli import (
+    LinearConfig,
     RegistrationConfig,
+    SynConfig,
     SynRegistrationResult,
     build_registration,
     run_syn_registration,
@@ -21,6 +23,8 @@ from aind_registration_utils.ants_cli import (
 
 from aind_lightsheet_registration.prepare import (
     ThresholdMethod,
+    block_average,
+    block_average_mask,
     brain_mask,
     center_of_mass_transform,
     dilate_mask,
@@ -31,6 +35,39 @@ from aind_lightsheet_registration.prepare import (
 from aind_lightsheet_registration.reader import finish_downsampling, read_level
 
 SIDECAR_NAME = "ls_to_template_transform_information.json"
+# working resolution of :func:`template_build_config`; its update-field smoothing is in voxels at this spacing
+TEMPLATE_BUILD_SPACING_MM = 0.05
+
+
+def template_build_config() -> RegistrationConfig:
+    """ANTs settings templates are built and registered with, for brains and templates at 50 µm.
+
+    SyN smooths each update with sigma 2 voxels (0.1 mm; ANTs takes the variance in voxels squared) and the total
+    field not at all, matches over a CC radius of 4 voxels (0.2 mm), and starts from a 1.2 mm level. Narrower
+    smoothing and windows, as on a 25 µm grid, let SyN fit noise and residual shading, which shows as a mottled log
+    Jacobian.
+    """
+    return RegistrationConfig(
+        linear=LinearConfig(
+            iterations=[1000, 500, 250],
+            shrink_factors=[4, 2, 1],
+            smoothing_sigmas=[0.1, 0.05, 0.0],
+            smoothing_units="mm",
+        ),
+        syn=SynConfig(
+            gradient_step=0.2,
+            update_field_variance=4.0,
+            total_field_variance=0.0,
+            metric="CC",
+            radius_or_bins=4,
+            iterations=[100, 100, 100, 70, 40, 40, 20],
+            shrink_factors=[24, 16, 12, 8, 4, 2, 1],
+            smoothing_sigmas=[0.6, 0.4, 0.3, 0.2, 0.1, 0.05, 0.0],
+            smoothing_units="mm",
+        ),
+        interpolation="Linear",
+        random_seed=1,
+    )
 
 
 @dataclass(frozen=True)
@@ -198,7 +235,8 @@ def register_to_template(
     out_dir: Path,
     *,
     config: RegistrationConfig | None = None,
-    mask_dilation_mm: float = 0.3,
+    working_spacing_mm: float = TEMPLATE_BUILD_SPACING_MM,
+    mask_dilation_mm: float = 0.4,
     threads: int | None = None,
     ants_path: Path | None = None,
 ) -> SynRegistrationResult:
@@ -213,7 +251,9 @@ def register_to_template(
     out_dir : Path
         Directory for the inputs written for ANTs and the transforms.
     config : RegistrationConfig or None
-        ANTs settings; ``None`` uses :meth:`RegistrationConfig.lightsheet_25um`.
+        ANTs settings; ``None`` uses :func:`template_build_config`.
+    working_spacing_mm : float
+        Spacing the brain is block-averaged to before registering; a whole multiple of its own, and the template's.
     mask_dilation_mm : float
         Growth of both masks before SyN, so the tissue boundary is registered.
     threads : int or None
@@ -227,16 +267,23 @@ def register_to_template(
         Transform paths, the sidecar and the ANTs command.
     """
     if config is None:
-        config = RegistrationConfig.lightsheet_25um()
+        config = template_build_config()
     inputs = out_dir / "inputs"
     inputs.mkdir(parents=True, exist_ok=True)
 
     template_image = sitk.ReadImage(str(template.image), sitk.sitkFloat32)
     template_mask = sitk.ReadImage(str(template.mask), sitk.sitkUInt8)
+    brain_image = sitk.ReadImage(str(brain.normalized), sitk.sitkFloat32)
     brain_tissue = sitk.ReadImage(str(brain.mask), sitk.sitkUInt8)
+    factor = _block_factor(brain_image.GetSpacing(), working_spacing_mm)
+    if not all(abs(s - working_spacing_mm) < 1e-4 for s in template_image.GetSpacing()):
+        raise ValueError(f"template spacing {template_image.GetSpacing()} mm is not {working_spacing_mm} mm")
     fixed = inputs / "template_normalized.nii.gz"
     fixed_mask = inputs / "template_mask_dilated.nii.gz"
+    moving = inputs / "brain_normalized_working.nii.gz"
     moving_mask = inputs / "brain_mask_dilated.nii.gz"
+    sitk.WriteImage(block_average(brain_image, factor), str(moving))
+    brain_tissue = block_average_mask(brain_tissue, factor)
     sitk.WriteImage(normalize_percentiles(template_image, template_mask), str(fixed))
     sitk.WriteImage(dilate_mask(template_mask, mask_dilation_mm), str(fixed_mask))
     sitk.WriteImage(dilate_mask(brain_tissue, mask_dilation_mm), str(moving_mask))
@@ -246,7 +293,7 @@ def register_to_template(
 
     reg = build_registration(
         fixed,
-        brain.normalized,
+        moving,
         out_dir / "reg_",
         config,
         fixed_mask=fixed_mask,
@@ -261,9 +308,18 @@ def register_to_template(
                 "template": {k: str(v) for k, v in asdict(template).items()},
                 "brain": {k: str(v) for k, v in asdict(brain).items()},
                 "mask_dilation_mm": mask_dilation_mm,
+                "working_spacing_mm": working_spacing_mm,
             },
             indent=2,
         )
         + "\n"
     )
     return result
+
+
+def _block_factor(spacing: tuple[float, ...], working_spacing_mm: float) -> int:
+    ratios = [working_spacing_mm / s for s in spacing]
+    factor = round(ratios[0])
+    if factor < 1 or any(abs(r - factor) > 1e-3 for r in ratios):
+        raise ValueError(f"working spacing {working_spacing_mm} mm is not a whole multiple of {spacing} mm")
+    return factor

@@ -88,6 +88,75 @@ def dilate_mask(mask: sitk.Image, radius_mm: float) -> sitk.Image:
     return grown
 
 
+def block_average(image: sitk.Image, factor: int) -> sitk.Image:
+    """Average ``factor``-cubed blocks, keeping the physical extent; voxels past the last whole block are dropped.
+
+    Parameters
+    ----------
+    image : sitk.Image
+        Image to downsample.
+    factor : int
+        Block edge in voxels; 1 returns a float32 copy.
+
+    Returns
+    -------
+    sitk.Image
+        Float32 image whose voxel centers are the block centers.
+    """
+    floated: sitk.Image = sitk.Cast(image, sitk.sitkFloat32)
+    if factor == 1:
+        return floated
+    shrunk: sitk.Image = sitk.BinShrink(floated, [factor] * image.GetDimension())
+    return shrunk
+
+
+def block_average_mask(mask: sitk.Image, factor: int) -> sitk.Image:
+    """Downsample a mask by :func:`block_average`, keeping blocks that are mostly inside.
+
+    Parameters
+    ----------
+    mask : sitk.Image
+        UInt8 mask.
+    factor : int
+        Block edge in voxels.
+
+    Returns
+    -------
+    sitk.Image
+        UInt8 mask.
+    """
+    kept: sitk.Image = sitk.Cast(block_average(mask, factor) > 0.5, sitk.sitkUInt8)
+    return kept
+
+
+def set_orientation(image: sitk.Image, orientation: str) -> sitk.Image:
+    """Replace the axis directions with an orientation code, keeping the volume's physical center.
+
+    For brains whose acquisition metadata names the wrong axis directions. The code is SimpleITK's: each letter is
+    where its index axis points, so the identity direction is "LPS".
+
+    Parameters
+    ----------
+    image : sitk.Image
+        Image whose direction is wrong.
+    orientation : str
+        Three-letter code, e.g. "LPS" or "RAI".
+
+    Returns
+    -------
+    sitk.Image
+        The same voxels with the new direction and an origin that leaves the center in place.
+    """
+    direction = sitk.DICOMOrientImageFilter.GetDirectionCosinesFromOrientation(orientation.upper())
+    center_index = [(n - 1) / 2 for n in image.GetSize()]
+    center = np.array(image.TransformContinuousIndexToPhysicalPoint(center_index))
+    out = sitk.Image(image)
+    out.SetDirection(direction)
+    offset = np.array(out.TransformContinuousIndexToPhysicalPoint(center_index)) - np.array(out.GetOrigin())
+    out.SetOrigin(tuple(center - offset))
+    return out
+
+
 def n4_correct(
     image: sitk.Image,
     mask: sitk.Image,

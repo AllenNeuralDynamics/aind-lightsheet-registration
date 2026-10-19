@@ -9,11 +9,14 @@ import pytest
 import SimpleITK as sitk
 
 from aind_lightsheet_registration.prepare import (
+    block_average,
+    block_average_mask,
     brain_mask,
     center_of_mass_transform,
     dilate_mask,
     n4_correct,
     normalize_percentiles,
+    set_orientation,
     write_transform,
 )
 
@@ -192,3 +195,32 @@ def test_ants_reads_the_initial_transform_in_the_same_direction(tmp_path):
     )
     mapped = np.loadtxt(tmp_path / "out.csv", delimiter=",", skiprows=1)[:3]
     np.testing.assert_allclose(mapped, transform.TransformPoint(point), atol=1e-6)
+
+
+def test_block_average_keeps_block_centers_and_means():
+    values = np.arange(4 * 6 * 8, dtype=np.float32).reshape(4, 6, 8)
+    image = _image(values)
+    image.SetDirection((-1, 0, 0, 0, 1, 0, 0, 0, -1))
+    out = block_average(image, 2)
+    assert out.GetSize() == (4, 3, 2) and out.GetSpacing() == pytest.approx((0.05,) * 3)
+    np.testing.assert_allclose(sitk.GetArrayViewFromImage(out)[0, 0, 0], values[:2, :2, :2].mean())
+    center = image.TransformContinuousIndexToPhysicalPoint((0.5, 0.5, 0.5))
+    np.testing.assert_allclose(out.TransformIndexToPhysicalPoint((0, 0, 0)), center, atol=1e-9)
+    mask = sitk.Cast(_image((values % 8 < 5).astype(np.float32)), sitk.sitkUInt8)
+    kept = sitk.GetArrayViewFromImage(block_average_mask(mask, 2))
+    np.testing.assert_array_equal(kept[0, 0], [1, 1, 0, 0])
+
+
+def test_set_orientation_replaces_directions_about_the_center():
+    image = _image(np.zeros((4, 6, 8)))
+    image.SetDirection((-1, 0, 0, 0, -1, 0, 0, 0, 1))
+    out = set_orientation(image, "lps")
+    assert out.GetDirection() == pytest.approx((1, 0, 0, 0, 1, 0, 0, 0, 1))
+    center = [(n - 1) / 2 for n in image.GetSize()]
+    np.testing.assert_allclose(
+        out.TransformContinuousIndexToPhysicalPoint(center), image.TransformContinuousIndexToPhysicalPoint(center)
+    )
+    assert (
+        sitk.DICOMOrientImageFilter.GetOrientationFromDirectionCosines(set_orientation(image, "RAI").GetDirection())
+        == "RAI"
+    )
