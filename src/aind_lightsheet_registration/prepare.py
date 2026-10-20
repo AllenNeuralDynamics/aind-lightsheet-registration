@@ -14,6 +14,7 @@ import numpy as np
 import SimpleITK as sitk
 
 ThresholdMethod = Literal["otsu", "li", "triangle", "huang"]
+Normalization = Literal["iqr", "percentile"]
 
 _THRESHOLDS: dict[ThresholdMethod, Callable[..., sitk.Image]] = {
     "otsu": sitk.OtsuThreshold,
@@ -240,6 +241,56 @@ def normalize_percentiles(
         raise ValueError(f"In-mask percentiles {low_percentile} and {high_percentile} are both {low}")
     scaled = np.clip((values.astype(np.float32) - low) / (high - low), 0.0, 1.0)
     out = sitk.GetImageFromArray(scaled)
+    out.CopyInformation(image)
+    return out
+
+
+def normalize_iqr(
+    image: sitk.Image, mask: sitk.Image, *, erode_mm: float = 0.1, min_csf_mm3: float = 0.002
+) -> sitk.Image:
+    """Map intensities to ``(x - median) / IQR + 1``, with the median and IQR taken over tissue alone.
+
+    Tissue is ``mask`` without CSF, eroded by ``erode_mm`` so partial-volume voxels at the surface and around the
+    ventricles do not enter. CSF is the dark regions (at or below a log-Otsu threshold) larger than
+    ``min_csf_mm3``; smaller dark specks are noise, and eroding around each would riddle the tissue. Nothing is
+    clipped: a template in these units sets the clip range.
+
+    Parameters
+    ----------
+    image : sitk.Image
+        Bias-corrected brain image.
+    mask : sitk.Image
+        UInt8 hole-filled brain mask.
+    erode_mm : float
+        Erosion of the tissue before the statistics.
+    min_csf_mm3 : float
+        Smallest dark region treated as CSF.
+
+    Returns
+    -------
+    sitk.Image
+        Float32 image with the input's geometry.
+    """
+    floated = sitk.Cast(image, sitk.sitkFloat32)
+    log = sitk.Log(sitk.Clamp(floated, lowerBound=0.0) + 1.0)
+    inside = sitk.Cast(mask, sitk.sitkUInt8) > 0
+    dark = sitk.And(inside, sitk.OtsuThreshold(log, 1, 0))
+    voxel_mm3 = float(np.prod(image.GetSpacing()))
+    csf = sitk.RelabelComponent(sitk.ConnectedComponent(dark), minimumObjectSize=int(min_csf_mm3 / voxel_mm3) + 1) > 0
+    tissue = sitk.And(inside, sitk.Not(csf))
+    # exact Euclidean erosion; ITK's ball kernel of the same radius is about 1.5 times larger in volume
+    to_background = sitk.SignedMaurerDistanceMap(
+        sitk.Not(tissue), insideIsPositive=False, squaredDistance=False, useImageSpacing=True
+    )
+    tissue = sitk.And(tissue, to_background > erode_mm * (1 + 1e-6))
+    values = sitk.GetArrayViewFromImage(floated)
+    selected = values[sitk.GetArrayViewFromImage(tissue) > 0]
+    if selected.size == 0:
+        raise ValueError("no tissue left after removing CSF and eroding")
+    q25, q50, q75 = np.percentile(selected, [25, 50, 75])
+    if q75 <= q25:
+        raise ValueError(f"tissue interquartile range is empty at {q50}")
+    out = sitk.GetImageFromArray(((values - q50) / (q75 - q25) + 1).astype(np.float32))
     out.CopyInformation(image)
     return out
 

@@ -15,6 +15,7 @@ from aind_lightsheet_registration.prepare import (
     center_of_mass_transform,
     dilate_mask,
     n4_correct,
+    normalize_iqr,
     normalize_percentiles,
     set_orientation,
     write_transform,
@@ -135,6 +136,27 @@ def test_normalize_percentiles_maps_in_mask_range_to_unit_interval(brain):
     assert np.mean(tissue == 1.0) == pytest.approx(0.005, abs=0.001)
     assert np.all(values[~inside] == 0.0)
     assert out.GetOrigin() == image.GetOrigin()
+
+
+def test_normalize_iqr_takes_statistics_from_tissue_without_csf_or_surface():
+    """A dim surface shell and a large dark ventricle would pull the median and widen the IQR if they entered."""
+    rng = np.random.default_rng(0)
+    shape, spacing = (60, 60, 60), 0.025
+    inside = _ellipsoid(shape=shape, center=(30, 30, 30), radii=(26, 26, 26))
+    core = _ellipsoid(shape=shape, center=(30, 30, 30), radii=(21, 21, 21))
+    ventricle = _ellipsoid(shape=shape, center=(30, 30, 30), radii=(9, 9, 9))  # 0.05 mm3, above min_csf_mm3
+    values = np.where(inside, 20.0, 0.0)  # the surface shell outside the core stays dim
+    values[core] = rng.uniform(80, 120, core.sum())
+    values[ventricle] = 2.0
+    image = _image(values)
+    image.SetSpacing((spacing,) * 3)
+    mask = sitk.Cast(_image(inside), sitk.sitkUInt8)
+    mask.CopyInformation(image)
+    out = sitk.GetArrayFromImage(normalize_iqr(image, mask, erode_mm=5 * spacing))
+    # tissue is the core less 5 voxels at each boundary; uniform on [80, 120] has median 100 and IQR 20
+    assert np.median(out[core & ~ventricle]) == pytest.approx(1.0, abs=0.02)
+    q25, q75 = np.percentile(out[core & ~ventricle], [25, 75])
+    assert q75 - q25 == pytest.approx(1.0, abs=0.03)
 
 
 def test_normalize_percentiles_rejects_a_constant_mask_region():

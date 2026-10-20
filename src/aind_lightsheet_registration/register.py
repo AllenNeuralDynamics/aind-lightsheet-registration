@@ -22,6 +22,7 @@ from aind_registration_utils.ants_cli import (
 )
 
 from aind_lightsheet_registration.prepare import (
+    Normalization,
     ThresholdMethod,
     block_average,
     block_average_mask,
@@ -29,6 +30,7 @@ from aind_lightsheet_registration.prepare import (
     center_of_mass_transform,
     dilate_mask,
     n4_correct,
+    normalize_iqr,
     normalize_percentiles,
     write_transform,
 )
@@ -80,10 +82,18 @@ class Template:
         Template image.
     mask : Path
         UInt8 tissue mask on the template's grid.
+    normalization : {"iqr", "percentile"}
+        How the template's intensities are scaled, and so how a brain is normalized to match. An "iqr" template
+        is used as stored; a "percentile" template is rescaled by in-mask percentiles like the brain.
+    clip : tuple of float or None
+        Range an "iqr" brain is clipped to, so CSF and background land on the template's values; ``None`` uses
+        the template's own minimum and maximum.
     """
 
     image: Path
     mask: Path
+    normalization: Normalization = "iqr"
+    clip: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -97,7 +107,7 @@ class PreparedBrain:
     corrected : Path
         ``downsampled`` after N4.
     normalized : Path
-        ``corrected`` scaled to [0, 1]; the registration's moving image.
+        ``corrected`` normalized to the template's convention; the registration's moving image.
     mask : Path
         Tissue mask.
     front_end : Path
@@ -140,6 +150,7 @@ def prepare_brain(
     *,
     target_spacing_mm: float = 0.025,
     mask_method: ThresholdMethod = "otsu",
+    normalization: Normalization = "iqr",
     compute_kwargs: dict[str, Any] | None = None,
 ) -> PreparedBrain:
     """Read a fused channel at ``target_spacing_mm``, mask it, bias-correct it and normalize it.
@@ -156,6 +167,8 @@ def prepare_brain(
         Isotropic working resolution.
     mask_method : {"otsu", "li", "triangle", "huang"}
         Threshold for :func:`~aind_lightsheet_registration.prepare.brain_mask`.
+    normalization : {"iqr", "percentile"}
+        The convention of the template the brain will be registered to.
     compute_kwargs : dict or None
         Passed to dask's ``compute()``, e.g. ``{"num_workers": 16}`` for S3.
 
@@ -172,7 +185,11 @@ def prepare_brain(
         "frame": "LPS, mm; origin at the center of the first full-resolution voxel",
     }
     return prepare_image(
-        finish_downsampling(read.image, target_spacing_mm), out_dir, mask_method=mask_method, record=record
+        finish_downsampling(read.image, target_spacing_mm),
+        out_dir,
+        mask_method=mask_method,
+        normalization=normalization,
+        record=record,
     )
 
 
@@ -181,6 +198,7 @@ def prepare_image(
     out_dir: Path,
     *,
     mask_method: ThresholdMethod = "otsu",
+    normalization: Normalization = "iqr",
     record: dict[str, Any] | None = None,
 ) -> PreparedBrain:
     """Mask, bias-correct and normalize a brain already at its working resolution, e.g. a corrected fusion.
@@ -193,6 +211,8 @@ def prepare_image(
         Directory for the outputs; created if missing.
     mask_method : {"otsu", "li", "triangle", "huang"}
         Threshold for :func:`~aind_lightsheet_registration.prepare.brain_mask`.
+    normalization : {"iqr", "percentile"}
+        The convention of the template the brain will be registered to.
     record : dict or None
         Provenance merged into ``front_end.json``.
 
@@ -206,7 +226,7 @@ def prepare_image(
     downsampled = sitk.Cast(image, sitk.sitkFloat32)
     mask = brain_mask(downsampled, method=mask_method)
     corrected = n4_correct(downsampled, mask)
-    normalized = normalize_percentiles(corrected, mask)
+    normalized = normalize_iqr(corrected, mask) if normalization == "iqr" else normalize_percentiles(corrected, mask)
     for result, path in [
         (downsampled, paths.downsampled),
         (corrected, paths.corrected),
@@ -222,6 +242,7 @@ def prepare_image(
         "direction": list(downsampled.GetDirection()),
         "size": list(downsampled.GetSize()),
         "mask_method": mask_method,
+        "normalization": normalization,
         "mask_log_intensity": True,
         "mask_volume_mm3": float(sitk.GetArrayViewFromImage(mask).sum()) * spacing**3,
     }
@@ -268,29 +289,9 @@ def register_to_template(
     """
     if config is None:
         config = template_build_config()
-    inputs = out_dir / "inputs"
-    inputs.mkdir(parents=True, exist_ok=True)
-
-    template_image = sitk.ReadImage(str(template.image), sitk.sitkFloat32)
-    template_mask = sitk.ReadImage(str(template.mask), sitk.sitkUInt8)
-    brain_image = sitk.ReadImage(str(brain.normalized), sitk.sitkFloat32)
-    brain_tissue = sitk.ReadImage(str(brain.mask), sitk.sitkUInt8)
-    factor = _block_factor(brain_image.GetSpacing(), working_spacing_mm)
-    if not all(abs(s - working_spacing_mm) < 1e-4 for s in template_image.GetSpacing()):
-        raise ValueError(f"template spacing {template_image.GetSpacing()} mm is not {working_spacing_mm} mm")
-    fixed = inputs / "template_normalized.nii.gz"
-    fixed_mask = inputs / "template_mask_dilated.nii.gz"
-    moving = inputs / "brain_normalized_working.nii.gz"
-    moving_mask = inputs / "brain_mask_dilated.nii.gz"
-    sitk.WriteImage(block_average(brain_image, factor), str(moving))
-    brain_tissue = block_average_mask(brain_tissue, factor)
-    sitk.WriteImage(normalize_percentiles(template_image, template_mask), str(fixed))
-    sitk.WriteImage(dilate_mask(template_mask, mask_dilation_mm), str(fixed_mask))
-    sitk.WriteImage(dilate_mask(brain_tissue, mask_dilation_mm), str(moving_mask))
-    initial = write_transform(
-        center_of_mass_transform(template_mask, brain_tissue), inputs / "initial_center_of_mass.mat"
+    fixed, moving, fixed_mask, moving_mask, initial = write_registration_inputs(
+        brain, template, out_dir / "inputs", working_spacing_mm=working_spacing_mm, mask_dilation_mm=mask_dilation_mm
     )
-
     reg = build_registration(
         fixed,
         moving,
@@ -305,7 +306,7 @@ def register_to_template(
     (out_dir / "inputs.json").write_text(
         json.dumps(
             {
-                "template": {k: str(v) for k, v in asdict(template).items()},
+                "template": {k: v if k == "clip" else str(v) for k, v in asdict(template).items()},
                 "brain": {k: str(v) for k, v in asdict(brain).items()},
                 "mask_dilation_mm": mask_dilation_mm,
                 "working_spacing_mm": working_spacing_mm,
@@ -317,9 +318,65 @@ def register_to_template(
     return result
 
 
+def write_registration_inputs(
+    brain: PreparedBrain,
+    template: Template,
+    inputs: Path,
+    *,
+    working_spacing_mm: float = TEMPLATE_BUILD_SPACING_MM,
+    mask_dilation_mm: float = 0.4,
+) -> tuple[Path, Path, Path, Path, Path]:
+    """Write the images, masks and initial transform ANTs registers, after checking brain and template agree.
+
+    Returns
+    -------
+    tuple of Path
+        Fixed image, moving image, fixed mask, moving mask and initial transform.
+    """
+    inputs.mkdir(parents=True, exist_ok=True)
+    template_image = sitk.ReadImage(str(template.image), sitk.sitkFloat32)
+    template_mask = sitk.ReadImage(str(template.mask), sitk.sitkUInt8)
+    brain_image = sitk.ReadImage(str(brain.normalized), sitk.sitkFloat32)
+    brain_tissue = sitk.ReadImage(str(brain.mask), sitk.sitkUInt8)
+    factor = _block_factor(brain_image.GetSpacing(), working_spacing_mm)
+    if not all(abs(s - working_spacing_mm) < 1e-4 for s in template_image.GetSpacing()):
+        raise ValueError(f"template spacing {template_image.GetSpacing()} mm is not {working_spacing_mm} mm")
+    if brain.front_end.exists():
+        prepared_as = json.loads(brain.front_end.read_text()).get("normalization", "percentile")
+        if prepared_as != template.normalization:
+            raise ValueError(f"brain normalized as {prepared_as!r}, template is {template.normalization!r}")
+    fixed_mask = inputs / "template_mask_dilated.nii.gz"
+    moving = inputs / "brain_normalized_working.nii.gz"
+    moving_mask = inputs / "brain_mask_dilated.nii.gz"
+    if template.normalization == "iqr":
+        fixed = template.image
+        brain_image = _clip(brain_image, template.clip or _range(template_image))
+    else:
+        fixed = inputs / "template_normalized.nii.gz"
+        sitk.WriteImage(normalize_percentiles(template_image, template_mask), str(fixed))
+    sitk.WriteImage(block_average(brain_image, factor), str(moving))
+    brain_tissue = block_average_mask(brain_tissue, factor)
+    sitk.WriteImage(dilate_mask(template_mask, mask_dilation_mm), str(fixed_mask))
+    sitk.WriteImage(dilate_mask(brain_tissue, mask_dilation_mm), str(moving_mask))
+    initial = write_transform(
+        center_of_mass_transform(template_mask, brain_tissue), inputs / "initial_center_of_mass.mat"
+    )
+    return fixed, moving, fixed_mask, moving_mask, initial
+
+
 def _block_factor(spacing: tuple[float, ...], working_spacing_mm: float) -> int:
     ratios = [working_spacing_mm / s for s in spacing]
     factor = round(ratios[0])
     if factor < 1 or any(abs(r - factor) > 1e-3 for r in ratios):
         raise ValueError(f"working spacing {working_spacing_mm} mm is not a whole multiple of {spacing} mm")
     return factor
+
+
+def _range(image: sitk.Image) -> tuple[float, float]:
+    values = sitk.GetArrayViewFromImage(image)
+    return float(values.min()), float(values.max())
+
+
+def _clip(image: sitk.Image, bounds: tuple[float, float]) -> sitk.Image:
+    clipped: sitk.Image = sitk.Clamp(image, lowerBound=bounds[0], upperBound=bounds[1])
+    return clipped

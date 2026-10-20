@@ -22,7 +22,7 @@ from aind_lightsheet_registration.destripe import destripe_stack
 from aind_lightsheet_registration.fuse import fuse_to_reference
 from aind_lightsheet_registration.illumination import fit_sheet_model
 from aind_lightsheet_registration.mirror import mirror_indices
-from aind_lightsheet_registration.prepare import brain_mask, set_orientation
+from aind_lightsheet_registration.prepare import Normalization, brain_mask, set_orientation
 from aind_lightsheet_registration.register import (
     TEMPLATE_BUILD_SPACING_MM,
     Template,
@@ -227,6 +227,10 @@ class Register:
     template: Path
     """Template at ``working_spacing_mm``."""
     template_mask: Path
+    template_normalization: Normalization = "iqr"
+    """How the template's intensities are scaled; the brain is normalized to match."""
+    template_clip: tuple[float, float] | None = None
+    """Clip range for an "iqr" template; defaults to the template's own range."""
     working_spacing_mm: float = TEMPLATE_BUILD_SPACING_MM
     """Registration grid; the brain is prepared at its own spacing and block-averaged to this."""
     orientation: str | None = None
@@ -243,11 +247,12 @@ class Register:
         prepared = prepare_image(
             image,
             self.out_dir / "prepared",
+            normalization=self.template_normalization,
             record={"image": str(self.image), "orientation_override": self.orientation},
         )
         result = register_to_template(
             prepared,
-            Template(self.template, self.template_mask),
+            Template(self.template, self.template_mask, self.template_normalization, self.template_clip),
             self.out_dir / "registration",
             working_spacing_mm=self.working_spacing_mm,
             threads=self.threads,

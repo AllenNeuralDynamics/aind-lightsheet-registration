@@ -18,6 +18,7 @@ from aind_lightsheet_registration.register import (
     prepare_brain,
     register_to_template,
     template_build_config,
+    write_registration_inputs,
 )
 from tests.conftest import write_pyramid
 
@@ -44,10 +45,12 @@ def test_prepare_brain_writes_registration_inputs(tmp_path, nd_metadata):
     path = tmp_path / "brain.ome.zarr"
     write_pyramid(path, base, 3, base_spacing_um=(50.0, 50.0, 50.0))
 
-    out = prepare_brain(str(path), nd_metadata, tmp_path / "prepared", target_spacing_mm=0.1)
+    out = prepare_brain(
+        str(path), nd_metadata, tmp_path / "prepared", target_spacing_mm=0.1, normalization="percentile"
+    )
 
     record = json.loads(out.front_end.read_text())
-    assert record["level"] == 1
+    assert record["level"] == 1 and record["normalization"] == "percentile"
     # A one-voxel shell is a tenth of this ellipsoid at 100 µm; a linear threshold would keep only the blob.
     assert record["mask_volume_mm3"] == pytest.approx(tissue.sum() * 0.05**3, rel=0.1)
     normalized = sitk.ReadImage(str(out.normalized))
@@ -132,3 +135,35 @@ def test_register_to_template_refuses_mismatched_grids(tmp_path, brain_spacing, 
     brain, template = _write_pair(tmp_path, brain_spacing, template_spacing)
     with pytest.raises(ValueError, match=message):
         register_to_template(brain, template, tmp_path / "reg")
+
+
+def test_iqr_template_is_used_as_stored_and_the_brain_clipped_to_its_range(tmp_path):
+    brain, template = _write_pair(tmp_path, 0.05, 0.05)
+    image = sitk.ReadImage(str(brain.normalized)) * 4.0 - 1.0  # about [-1, 3], wider than the template's [0, 1]
+    sitk.WriteImage(image, str(brain.normalized))
+    fixed, moving, *_ = write_registration_inputs(brain, template, tmp_path / "inputs", working_spacing_mm=0.05)
+    assert fixed == template.image
+    stored = sitk.GetArrayFromImage(sitk.ReadImage(str(template.image)))
+    values = sitk.GetArrayFromImage(sitk.ReadImage(str(moving)))
+    assert (values.min(), values.max()) == pytest.approx((stored.min(), stored.max()), abs=1e-6)
+
+    clipped = Template(template.image, template.mask, clip=(-0.5, 2.0))
+    _, moving, *_ = write_registration_inputs(brain, clipped, tmp_path / "inputs", working_spacing_mm=0.05)
+    values = sitk.GetArrayFromImage(sitk.ReadImage(str(moving)))
+    assert (values.min(), values.max()) == pytest.approx((-0.5, 2.0), abs=1e-6)
+
+
+def test_percentile_template_is_rescaled(tmp_path):
+    brain, template = _write_pair(tmp_path, 0.05, 0.05)
+    sitk.WriteImage(sitk.ReadImage(str(template.image)) * 50.0, str(template.image))
+    percentile = Template(template.image, template.mask, normalization="percentile")
+    fixed, *_ = write_registration_inputs(brain, percentile, tmp_path / "inputs", working_spacing_mm=0.05)
+    values = sitk.GetArrayFromImage(sitk.ReadImage(str(fixed)))
+    assert fixed != template.image and (values.min(), values.max()) == (0.0, 1.0)
+
+
+def test_register_to_template_refuses_a_brain_normalized_for_another_template(tmp_path):
+    brain, template = _write_pair(tmp_path, 0.05, 0.05)
+    brain.front_end.write_text(json.dumps({"normalization": "percentile"}))
+    with pytest.raises(ValueError, match="normalized as 'percentile'"):
+        register_to_template(brain, template, tmp_path / "reg", working_spacing_mm=0.05)
