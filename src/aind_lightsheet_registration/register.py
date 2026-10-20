@@ -21,6 +21,7 @@ from aind_registration_utils.ants_cli import (
     run_syn_registration,
 )
 
+from aind_lightsheet_registration.orientation import check_orientation
 from aind_lightsheet_registration.prepare import (
     Normalization,
     ThresholdMethod,
@@ -258,6 +259,8 @@ def register_to_template(
     config: RegistrationConfig | None = None,
     working_spacing_mm: float = TEMPLATE_BUILD_SPACING_MM,
     mask_dilation_mm: float = 0.4,
+    orientation_check: bool = True,
+    expected_orientation: str | None = None,
     threads: int | None = None,
     ants_path: Path | None = None,
 ) -> SynRegistrationResult:
@@ -277,6 +280,10 @@ def register_to_template(
         Spacing the brain is block-averaged to before registering; a whole multiple of its own, and the template's.
     mask_dilation_mm : float
         Growth of both masks before SyN, so the tissue boundary is registered.
+    orientation_check : bool
+        Refuse a brain that fits the template far better under another axis rotation of its directions.
+    expected_orientation : str or None
+        Axis code the brain's directions should have; a mismatch warns. The only check that catches a mirror.
     threads : int or None
         ITK thread count; ``None`` leaves ITK's default.
     ants_path : Path or None
@@ -290,7 +297,13 @@ def register_to_template(
     if config is None:
         config = template_build_config()
     fixed, moving, fixed_mask, moving_mask, initial = write_registration_inputs(
-        brain, template, out_dir / "inputs", working_spacing_mm=working_spacing_mm, mask_dilation_mm=mask_dilation_mm
+        brain,
+        template,
+        out_dir / "inputs",
+        working_spacing_mm=working_spacing_mm,
+        mask_dilation_mm=mask_dilation_mm,
+        orientation_check=orientation_check,
+        expected_orientation=expected_orientation,
     )
     reg = build_registration(
         fixed,
@@ -325,8 +338,12 @@ def write_registration_inputs(
     *,
     working_spacing_mm: float = TEMPLATE_BUILD_SPACING_MM,
     mask_dilation_mm: float = 0.4,
+    orientation_check: bool = True,
+    expected_orientation: str | None = None,
 ) -> tuple[Path, Path, Path, Path, Path]:
     """Write the images, masks and initial transform ANTs registers, after checking brain and template agree.
+
+    Arguments are as for :func:`register_to_template`; the orientation scores go to ``orientation_check.json``.
 
     Returns
     -------
@@ -345,6 +362,13 @@ def write_registration_inputs(
         prepared_as = json.loads(brain.front_end.read_text()).get("normalization", "percentile")
         if prepared_as != template.normalization:
             raise ValueError(f"brain normalized as {prepared_as!r}, template is {template.normalization!r}")
+    if orientation_check:
+        scores = check_orientation(
+            brain_image, brain_tissue, template_image, template_mask, expected=expected_orientation
+        )
+        (inputs / "orientation_check.json").write_text(
+            json.dumps({s.orientation: s.mutual_information for s in scores}, indent=1) + "\n"
+        )
     fixed_mask = inputs / "template_mask_dilated.nii.gz"
     moving = inputs / "brain_normalized_working.nii.gz"
     moving_mask = inputs / "brain_mask_dilated.nii.gz"

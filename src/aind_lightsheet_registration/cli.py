@@ -235,6 +235,10 @@ class Register:
     """Registration grid; the brain is prepared at its own spacing and block-averaged to this."""
     orientation: str | None = None
     """Axis code replacing the image's directions, e.g. "LPS" (SimpleITK convention), when its metadata is wrong."""
+    expected_orientation: str | None = None
+    """Axis code the acquisition should have; a mismatch warns, the only check that catches a left-right mirror."""
+    orientation_check: bool = True
+    """Refuse a brain that fits the template far better under another axis rotation of its directions."""
     threads: int | None = None
     ants_path: Path | None = None
     """Directory holding the ANTs binaries."""
@@ -255,6 +259,8 @@ class Register:
             Template(self.template, self.template_mask, self.template_normalization, self.template_clip),
             self.out_dir / "registration",
             working_spacing_mm=self.working_spacing_mm,
+            orientation_check=self.orientation_check,
+            expected_orientation=self.expected_orientation,
             threads=self.threads,
             ants_path=self.ants_path,
         )
