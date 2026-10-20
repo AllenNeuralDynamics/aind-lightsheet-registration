@@ -203,11 +203,11 @@ def test_block_average_keeps_block_centers_and_means():
     image.SetDirection((-1, 0, 0, 0, 1, 0, 0, 0, -1))
     out = block_average(image, 2)
     assert out.GetSize() == (4, 3, 2) and out.GetSpacing() == pytest.approx((0.05,) * 3)
-    np.testing.assert_allclose(sitk.GetArrayViewFromImage(out)[0, 0, 0], values[:2, :2, :2].mean())
+    np.testing.assert_allclose(sitk.GetArrayFromImage(out)[0, 0, 0], values[:2, :2, :2].mean())
     center = image.TransformContinuousIndexToPhysicalPoint((0.5, 0.5, 0.5))
     np.testing.assert_allclose(out.TransformIndexToPhysicalPoint((0, 0, 0)), center, atol=1e-9)
     mask = sitk.Cast(_image((values % 8 < 5).astype(np.float32)), sitk.sitkUInt8)
-    kept = sitk.GetArrayViewFromImage(block_average_mask(mask, 2))
+    kept = sitk.GetArrayFromImage(block_average_mask(mask, 2))
     np.testing.assert_array_equal(kept[0, 0], [1, 1, 0, 0])
 
 

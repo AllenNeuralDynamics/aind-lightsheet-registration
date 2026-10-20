@@ -351,7 +351,7 @@ def fetch_tiles(
         raise ValueError(f"tiles differ in shape: {shapes}")
     nz, ny, nx = shapes.pop()
     layout = TileLayout.from_metadata(metadata, level=level, shape=(nz, ny, nx), channel=channel)
-    dark = sitk.GetArrayViewFromImage(sitk.ReadImage(str(out_dir / DARKFIELD_NAME)))
+    dark = sitk.GetArrayFromImage(sitk.ReadImage(str(out_dir / DARKFIELD_NAME)))
     darkfield = float(np.median(dark))
     (out_dir / LAYOUT_NAME).write_text(layout.to_json())
     (out_dir / "darkfield.json").write_text(json.dumps({"darkfield": darkfield, "source": DARKFIELD_NAME}) + "\n")
