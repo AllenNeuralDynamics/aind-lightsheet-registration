@@ -24,7 +24,7 @@ from aind_lightsheet_registration.illumination import fit_sheet_model
 from aind_lightsheet_registration.mirror import mirror_indices
 from aind_lightsheet_registration.prepare import Normalization, brain_mask, set_orientation
 from aind_lightsheet_registration.register import (
-    TEMPLATE_BUILD_SPACING_MM,
+    WORKING_SPACING_MM,
     Template,
     prepare_image,
     register_to_template,
@@ -231,7 +231,7 @@ class Register:
     """How the template's intensities are scaled; the brain is normalized to match."""
     template_clip: tuple[float, float] | None = None
     """Clip range for an "iqr" template; defaults to the template's own range."""
-    working_spacing_mm: float = TEMPLATE_BUILD_SPACING_MM
+    working_spacing_mm: float = WORKING_SPACING_MM
     """Registration grid; the brain is prepared at its own spacing and block-averaged to this."""
     orientation: str | None = None
     """Axis code replacing the image's directions, e.g. "LPS" (SimpleITK convention), when its metadata is wrong."""

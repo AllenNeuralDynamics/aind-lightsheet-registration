@@ -38,17 +38,18 @@ from aind_lightsheet_registration.prepare import (
 from aind_lightsheet_registration.reader import finish_downsampling, read_level
 
 SIDECAR_NAME = "ls_to_template_transform_information.json"
-# working resolution of :func:`template_build_config`; its update-field smoothing is in voxels at this spacing
-TEMPLATE_BUILD_SPACING_MM = 0.05
+# working resolution of :func:`registration_config`; its field smoothing is in voxels at this spacing
+WORKING_SPACING_MM = 0.05
 
 
-def template_build_config() -> RegistrationConfig:
-    """ANTs settings templates are built and registered with, for brains and templates at 50 µm.
+def registration_config() -> RegistrationConfig:
+    """ANTs settings for registering a brain to a template, both at 50 µm.
 
-    SyN smooths each update with sigma 2 voxels (0.1 mm; ANTs takes the variance in voxels squared) and the total
-    field not at all, matches over a CC radius of 4 voxels (0.2 mm), and starts from a 1.2 mm level. Narrower
+    SyN smooths each update with sigma 2 voxels (0.1 mm; ANTs takes variances in voxels squared) and the total
+    field with sigma 1 voxel, matches over a CC radius of 4 voxels (0.2 mm), and starts from a 1.2 mm level. Narrower
     smoothing and windows, as on a 25 µm grid, let SyN fit noise and residual shading, which shows as a mottled log
-    Jacobian.
+    Jacobian. Without total-field smoothing SyN matches the template better but maps worse: the deformation it adds
+    fits each brain's texture in featureless tissue such as cortex.
     """
     return RegistrationConfig(
         linear=LinearConfig(
@@ -60,7 +61,7 @@ def template_build_config() -> RegistrationConfig:
         syn=SynConfig(
             gradient_step=0.2,
             update_field_variance=4.0,
-            total_field_variance=0.0,
+            total_field_variance=1.0,
             metric="CC",
             radius_or_bins=4,
             iterations=[100, 100, 100, 70, 40, 40, 20],
@@ -257,7 +258,7 @@ def register_to_template(
     out_dir: Path,
     *,
     config: RegistrationConfig | None = None,
-    working_spacing_mm: float = TEMPLATE_BUILD_SPACING_MM,
+    working_spacing_mm: float = WORKING_SPACING_MM,
     mask_dilation_mm: float = 0.4,
     orientation_check: bool = True,
     expected_orientation: str | None = None,
@@ -275,7 +276,7 @@ def register_to_template(
     out_dir : Path
         Directory for the inputs written for ANTs and the transforms.
     config : RegistrationConfig or None
-        ANTs settings; ``None`` uses :func:`template_build_config`.
+        ANTs settings; ``None`` uses :func:`registration_config`.
     working_spacing_mm : float
         Spacing the brain is block-averaged to before registering; a whole multiple of its own, and the template's.
     mask_dilation_mm : float
@@ -295,7 +296,7 @@ def register_to_template(
         Transform paths, the sidecar and the ANTs command.
     """
     if config is None:
-        config = template_build_config()
+        config = registration_config()
     fixed, moving, fixed_mask, moving_mask, initial = write_registration_inputs(
         brain,
         template,
@@ -336,7 +337,7 @@ def write_registration_inputs(
     template: Template,
     inputs: Path,
     *,
-    working_spacing_mm: float = TEMPLATE_BUILD_SPACING_MM,
+    working_spacing_mm: float = WORKING_SPACING_MM,
     mask_dilation_mm: float = 0.4,
     orientation_check: bool = True,
     expected_orientation: str | None = None,

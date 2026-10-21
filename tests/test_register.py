@@ -12,12 +12,12 @@ from aind_registration_utils.chains import SynTransform, transform_points
 
 from aind_lightsheet_registration.register import (
     SIDECAR_NAME,
-    TEMPLATE_BUILD_SPACING_MM,
+    WORKING_SPACING_MM,
     PreparedBrain,
     Template,
     prepare_brain,
     register_to_template,
-    template_build_config,
+    registration_config,
     write_registration_inputs,
 )
 from tests.conftest import write_pyramid
@@ -105,12 +105,12 @@ def test_register_to_template_recovers_a_shift(tmp_path):
     np.testing.assert_allclose(mapped, landmarks + shift, atol=0.05)
 
 
-def test_template_build_config_smooths_updates_over_0_1_mm():
-    config = template_build_config()
-    assert config.syn.update_field_variance**0.5 * TEMPLATE_BUILD_SPACING_MM == pytest.approx(0.1)
-    assert config.syn.radius_or_bins * TEMPLATE_BUILD_SPACING_MM == pytest.approx(0.2)
-    assert config.syn.total_field_variance == 0.0
-    assert config.syn.shrink_factors[0] * TEMPLATE_BUILD_SPACING_MM == pytest.approx(1.2)
+def test_registration_config_smooths_over_0_1_mm_and_holds_the_total_field():
+    config = registration_config()
+    assert config.syn.update_field_variance**0.5 * WORKING_SPACING_MM == pytest.approx(0.1)
+    assert config.syn.radius_or_bins * WORKING_SPACING_MM == pytest.approx(0.2)
+    assert config.syn.total_field_variance**0.5 * WORKING_SPACING_MM == pytest.approx(0.05)
+    assert config.syn.shrink_factors[0] * WORKING_SPACING_MM == pytest.approx(1.2)
     assert config.syn.shrink_factors[-1] == 1 and len(config.syn.iterations) == 7
 
 
