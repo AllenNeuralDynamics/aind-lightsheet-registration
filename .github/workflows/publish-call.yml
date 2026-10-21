@@ -19,7 +19,7 @@ jobs:
     with:
       tag-name: ${{ github.ref_name }}
       python-version: "3.13"
-      publish-to-pypi: false
+      publish-to-pypi: true
     secrets:
       repo-token: ${{ secrets.GITHUB_TOKEN }}
       pypi-token: ${{ secrets.AIND_PYPI_TOKEN }}
