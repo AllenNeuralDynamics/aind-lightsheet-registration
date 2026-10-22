@@ -19,6 +19,7 @@ from aind_lightsheet_registration.annotations import (
     write_mapped_csv,
 )
 from aind_lightsheet_registration.destripe import destripe_stack
+from aind_lightsheet_registration.focus import estimate_focus_ramp, plane_depths_um, ramp_depths_um
 from aind_lightsheet_registration.fuse import fuse_to_reference
 from aind_lightsheet_registration.illumination import fit_sheet_model
 from aind_lightsheet_registration.mirror import mirror_indices
@@ -39,7 +40,7 @@ from aind_lightsheet_registration.stitch import (
     solve_offsets,
     solve_residuals,
 )
-from aind_lightsheet_registration.tiles import Tile, TileSet, fetch_tiles
+from aind_lightsheet_registration.tiles import TILE_LIST_NAME, TILE_SETTINGS_NAME, Tile, TileSet, fetch_tiles
 
 DESTRIPED = "destriped"
 # the SmartSPIM pipeline's A->P blending: the earlier row's weight across the overlap, measured by fitting its fusion
@@ -84,10 +85,10 @@ def _destripe_one(args: tuple[Path, str, int, int]) -> str:
 class Correct:
     """Destripe, stitch, fit the illumination model and fuse, onto a reference brain's grid.
 
-    Writes into ``out_dir``: offsets.json and shear.json, illumination.npz, fused_raw, mask, fused_nominal
-    (corrected, tiles at their stage positions), fused_stitched (corrected, tiles sheared per illumination side and
-    moved by the offsets) and nominal_to_stitched, a point field from the annotated pipeline fusion to
-    fused_stitched.
+    Writes into ``out_dir``: offsets.json and shear.json, focus_ramp.json, illumination.npz, fused_raw, mask,
+    fused_nominal (corrected, tiles at their stage positions), fused_stitched (corrected, tiles sheared per
+    illumination side and moved by the offsets) and nominal_to_stitched, a point field from the annotated pipeline
+    fusion to fused_stitched.
     """
 
     tiles_dir: Path
@@ -105,6 +106,8 @@ class Correct:
     bleaching model."""
     seam_profile: Path | None = None
     """Tile-row seam profile (.tsv) from calibrate-seams, divided out at every seam."""
+    focus_ramp: bool = True
+    """Divide out the dips at the focus-ramp planes, where the tiles directory has the asset's TileSettings.ini."""
     restitch: bool = False
     """Measure tile offsets again even if offsets.json exists. Reused offsets without a shear.json beside them were
     measured on unsheared tiles, and are fused unsheared."""
@@ -149,6 +152,22 @@ class Correct:
             print(f"solve residual median {np.median(resid):.2f}, max {np.max(resid):.2f} voxels", flush=True)
             offsets_path.write_text(json.dumps(offsets, indent=1) + "\n")
 
+        plane_gain = None
+        settings = self.tiles_dir / TILE_SETTINGS_NAME
+        if self.focus_ramp and settings.exists():
+            metadata = json.loads((self.tiles_dir / TILE_LIST_NAME).read_text())
+            ramp = ramp_depths_um(settings.read_text(encoding="latin1"), metadata, lay.channel)
+            focus = estimate_focus_ramp(lay, load, ramp)
+            focus.save(self.out_dir / "focus_ramp.json")
+            plane_gain = focus.along(plane_depths_um(lay))
+            print(
+                f"focus ramp: {len(ramp)} planes every {focus.period_um:.0f} um, gain "
+                f"{focus.log_gain.min() * 100:+.1f}% to {focus.log_gain.max() * 100:+.1f}%",
+                flush=True,
+            )
+        elif self.focus_ramp:
+            print(f"no {TILE_SETTINGS_NAME} in {self.tiles_dir}: focus ramp left in", flush=True)
+
         reference = sitk.ReadImage(str(self.reference), sitk.sitkFloat32)
         raw, shift = fuse_to_reference(lay, load, reference)
         print(f"mosaic placed on the reference at voxel shift (z, y, x) {shift}", flush=True)
@@ -165,10 +184,20 @@ class Correct:
         seams = SeamProfile.load(self.seam_profile) if self.seam_profile else None
         if seams is not None:
             seams.check_layout(lay)
-        nominal, _ = fuse_to_reference(lay, load, reference, log_gain=log_gain, shift=shift, seam_profile=seams)
+        nominal, _ = fuse_to_reference(
+            lay, load, reference, log_gain=log_gain, shift=shift, seam_profile=seams, plane_log_gain=plane_gain
+        )
         sitk.WriteImage(nominal, str(self.out_dir / "fused_nominal.nii.gz"))
         stitched, _ = fuse_to_reference(
-            lay, load, reference, log_gain=log_gain, offsets=offsets, shift=shift, seam_profile=seams, shear=shear
+            lay,
+            load,
+            reference,
+            log_gain=log_gain,
+            offsets=offsets,
+            shift=shift,
+            seam_profile=seams,
+            shear=shear,
+            plane_log_gain=plane_gain,
         )
         sitk.WriteImage(stitched, str(self.out_dir / "fused_stitched.nii.gz"))
         field = nominal_to_stitched_field(
@@ -185,6 +214,7 @@ class Correct:
                     "annotated_ap_weights": self.annotated_ap_weights,
                     "model": self.model,
                     "seam_profile": str(self.seam_profile) if self.seam_profile else None,
+                    "focus_ramp": plane_gain is not None,
                 },
                 indent=1,
             )

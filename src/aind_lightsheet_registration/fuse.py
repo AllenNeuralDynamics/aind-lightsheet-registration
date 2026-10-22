@@ -25,6 +25,7 @@ def fuse_mosaic(
     ap_weights: tuple[float, float] | None = None,
     seam_profile: SeamProfile | None = None,
     shear: SideShear | None = None,
+    plane_log_gain: np.ndarray | None = None,
 ) -> sitk.Image:
     """Blend the tiles at their nominal positions, or sheared and moved by ``shear`` and ``offsets``.
 
@@ -46,6 +47,9 @@ def fuse_mosaic(
     shear : SideShear or None
         Per-side z-y shear from :func:`~aind_lightsheet_registration.stitch.measure_side_shear`, applied with the
         offsets in one interpolation.
+    plane_log_gain : numpy.ndarray or None
+        Log gain per tile plane, e.g. :meth:`~aind_lightsheet_registration.focus.FocusRamp.along`; every tile is
+        divided by its exponential.
 
     Returns
     -------
@@ -62,6 +66,8 @@ def fuse_mosaic(
         stack = load(tile)
         if log_gain is not None:  # in the tile's own frame, before it moves
             stack = stack * np.exp(-log_gain(tile)).astype(np.float32)
+        if plane_log_gain is not None:
+            stack = stack * np.exp(-plane_log_gain).astype(np.float32)[:, None, None]
         if offsets is not None or shear is not None:
             offset = offsets[tile.name] if offsets is not None else (0.0, 0.0, 0.0)
             stack = move_tile(stack, offset, shear.of(tile) if shear is not None else 0.0)
@@ -131,12 +137,13 @@ def fuse_to_reference(
     shift: tuple[int, int, int] | None = None,
     seam_profile: SeamProfile | None = None,
     shear: SideShear | None = None,
+    plane_log_gain: np.ndarray | None = None,
 ) -> tuple[sitk.Image, tuple[int, int, int]]:
     """:func:`fuse_mosaic`, taken to ``reference``'s spacing and placed on its grid.
 
     Parameters
     ----------
-    layout, load, log_gain, offsets, ap_weights, seam_profile, shear
+    layout, load, log_gain, offsets, ap_weights, seam_profile, shear, plane_log_gain
         As for :func:`fuse_mosaic`.
     reference : sitk.Image
         Brain whose grid the result takes; isotropic.
@@ -156,5 +163,6 @@ def fuse_to_reference(
         ap_weights=ap_weights,
         seam_profile=seam_profile,
         shear=shear,
+        plane_log_gain=plane_log_gain,
     )
     return place_on_reference(finish_downsampling(mosaic, reference.GetSpacing()[0]), reference, shift=shift)

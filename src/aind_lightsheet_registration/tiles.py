@@ -20,6 +20,7 @@ import SimpleITK as sitk
 STAGE_UNIT_UM = 0.1
 TILE_LIST_NAME = "metadata.json"
 DARKFIELD_NAME = "DarkMaster_cropped.tif"
+TILE_SETTINGS_NAME = "TileSettings.ini"  # focus-ramp planes; absent from older assets
 LAYOUT_NAME = "layout.json"
 
 
@@ -301,7 +302,8 @@ def fetch_tiles(
 ) -> TileSet:
     """Download every tile of ``channel`` at the level :func:`choose_tile_level` picks, plus its layout and darkfield.
 
-    Tiles already in ``out_dir`` are kept. S3 is read anonymously.
+    The focus-ramp settings come too where the asset has them. Tiles already in ``out_dir`` are kept. S3 is read
+    anonymously.
 
     Parameters
     ----------
@@ -329,9 +331,11 @@ def fetch_tiles(
     out_dir.mkdir(parents=True, exist_ok=True)
     derivatives = f"{raw_asset_uri.rstrip('/')}/SPIM/derivatives"
     storage: dict[str, Any] = {"anon": True} if raw_asset_uri.startswith("s3://") else {}
-    for name in (TILE_LIST_NAME, DARKFIELD_NAME):
+    for name in (TILE_LIST_NAME, DARKFIELD_NAME, TILE_SETTINGS_NAME):
         if not (out_dir / name).exists():
             fs, path = fsspec.core.url_to_fs(f"{derivatives}/{name}", **storage)
+            if name == TILE_SETTINGS_NAME and not fs.exists(path):
+                continue
             (out_dir / name).write_bytes(fs.cat_file(path))
     metadata = json.loads((out_dir / TILE_LIST_NAME).read_text())
     level = choose_tile_level(metadata, target_spacing_um)
