@@ -10,6 +10,8 @@ from scipy.ndimage import shift as nd_shift
 
 from aind_lightsheet_registration.fuse import fuse_mosaic, place_on_reference
 from aind_lightsheet_registration.stitch import (
+    _masked_ncc,
+    consistent_pairs,
     measure_pairs,
     nominal_to_stitched_field,
     solve_offsets,
@@ -97,6 +99,46 @@ def test_stitching_recovers_tile_offsets(layout):
     expected -= np.median(expected, axis=0)
     np.testing.assert_allclose(np.array(list(offsets.values())), expected, atol=0.25)
     assert max(solve_residuals(offsets, pairs)) < 0.25
+
+
+def test_wide_search_recovers_offsets_beyond_a_few_voxels(layout):
+    true = dict(zip([t.name for t in layout.tiles], [(0, 0, 0), (4, -3, 4), (-4, 3, 0), (0, 3, -3)], strict=True))
+    tiles = _cut(layout, _scene(layout), true)
+    pairs = measure_pairs(layout, lambda t: tiles[t.name], margin_um=(40.0, 28.8, 36.0))  # 10, 8, 10 voxels
+    assert len(pairs) == 4 and not any(p.at_edge for p in pairs)
+    expected = -np.array(list(true.values()), float)
+    expected -= np.median(expected, axis=0)
+    np.testing.assert_allclose(np.array(list(solve_offsets(layout, pairs).values())), expected, atol=0.25)
+
+
+def test_masked_correlation_matches_exact_pearson():
+    rng = np.random.default_rng(2)
+    fa, fb = (gaussian_filter(rng.normal(size=(20, 24, 18)), 1).astype(np.float32) for _ in range(2))
+    ma, mb = fa > -0.2, fb > -0.1
+    score, count = _masked_ncc(fa, ma, fb, mb, (3, 4, 2))
+    for lag in [(0, 0, 0), (-3, 4, 2), (2, -1, -2)]:
+        sa = tuple(slice(max(0, -d), s - max(0, d)) for d, s in zip(lag, fa.shape))
+        sb = tuple(slice(max(0, d), s - max(0, -d)) for d, s in zip(lag, fa.shape))
+        both = ma[sa] & mb[sb]
+        k = tuple(np.array(lag) + (3, 4, 2))
+        assert count[k] == both.sum()
+        assert score[k] == pytest.approx(np.corrcoef(fa[sa][both], fb[sb][both])[0, 1], abs=1e-5)
+
+
+def test_contradicted_pair_is_dropped():
+    lay = TileLayout.from_metadata(_metadata(3, 3), level=1, shape=SHAPE)
+    true = {t.name: (0, (t.row * 2 + t.col) % 3 - 1, t.col - 1) for t in lay.tiles}
+    tiles = _cut(lay, _scene(lay), true)
+    pairs = measure_pairs(lay, lambda t: tiles[t.name], margin_um=MARGIN_UM)
+    # an interior pair, in two cycles; a perimeter pair's error splits evenly over its one cycle
+    i = next(i for i, p in enumerate(pairs) if p.label == "AP r2c2->r3c2")
+    bad = pairs[i]
+    pairs[i] = replace(bad, shift=(bad.shift[0] + 3.0, bad.shift[1], bad.shift[2]))
+    kept = consistent_pairs(lay, pairs)
+    assert [p.label for p in pairs if p not in kept] == [bad.label]
+    expected = -np.array(list(true.values()), float)
+    expected -= np.median(expected, axis=0)
+    np.testing.assert_allclose(np.array(list(solve_offsets(lay, pairs).values())), expected, atol=0.25)
 
 
 def test_unplaceable_tile_is_an_error(layout):

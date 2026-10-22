@@ -30,7 +30,13 @@ from aind_lightsheet_registration.register import (
     register_to_template,
 )
 from aind_lightsheet_registration.seams import SeamProfile, estimate_seam_profile, interior_seam_starts_mm, seam_windows
-from aind_lightsheet_registration.stitch import measure_pairs, nominal_to_stitched_field, solve_offsets, solve_residuals
+from aind_lightsheet_registration.stitch import (
+    consistent_pairs,
+    measure_pairs,
+    nominal_to_stitched_field,
+    solve_offsets,
+    solve_residuals,
+)
 from aind_lightsheet_registration.tiles import Tile, TileSet, fetch_tiles
 
 DESTRIPED = "destriped"
@@ -123,8 +129,12 @@ class Correct:
                 print(
                     f"{p.label:16s} shift (z, y, x) {np.round(p.shift, 2)} corr {p.correlation:.2f}{flag}", flush=True
                 )
+            kept = consistent_pairs(lay, pairs)
+            for p in pairs:
+                if p not in kept and not p.at_edge:
+                    print(f"{p.label:16s} dropped: low correlation or contradicted by the others", flush=True)
             offsets = solve_offsets(lay, pairs)
-            resid = solve_residuals(offsets, pairs)
+            resid = solve_residuals(offsets, kept)
             print(f"solve residual median {np.median(resid):.2f}, max {np.max(resid):.2f} voxels", flush=True)
             offsets_path.write_text(json.dumps(offsets, indent=1) + "\n")
 
