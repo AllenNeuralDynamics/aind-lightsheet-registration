@@ -31,8 +31,10 @@ from aind_lightsheet_registration.register import (
 )
 from aind_lightsheet_registration.seams import SeamProfile, estimate_seam_profile, interior_seam_starts_mm, seam_windows
 from aind_lightsheet_registration.stitch import (
+    SideShear,
     consistent_pairs,
     measure_pairs,
+    measure_side_shear,
     nominal_to_stitched_field,
     solve_offsets,
     solve_residuals,
@@ -82,9 +84,10 @@ def _destripe_one(args: tuple[Path, str, int, int]) -> str:
 class Correct:
     """Destripe, stitch, fit the illumination model and fuse, onto a reference brain's grid.
 
-    Writes into ``out_dir``: offsets.json, illumination.npz, fused_raw, mask, fused_nominal (corrected, tiles at
-    their stage positions), fused_stitched (corrected, tiles moved by the offsets) and nominal_to_stitched, a point
-    field from the annotated pipeline fusion to fused_stitched.
+    Writes into ``out_dir``: offsets.json and shear.json, illumination.npz, fused_raw, mask, fused_nominal
+    (corrected, tiles at their stage positions), fused_stitched (corrected, tiles sheared per illumination side and
+    moved by the offsets) and nominal_to_stitched, a point field from the annotated pipeline fusion to
+    fused_stitched.
     """
 
     tiles_dir: Path
@@ -103,7 +106,8 @@ class Correct:
     seam_profile: Path | None = None
     """Tile-row seam profile (.tsv) from calibrate-seams, divided out at every seam."""
     restitch: bool = False
-    """Measure tile offsets again even if offsets.json exists."""
+    """Measure tile offsets again even if offsets.json exists. Reused offsets without a shear.json beside them were
+    measured on unsheared tiles, and are fused unsheared."""
 
     def run(self) -> None:
         """Run the step."""
@@ -118,12 +122,19 @@ class Correct:
         def load(t: Tile) -> np.ndarray:
             return ts.load(t, DESTRIPED)
 
-        offsets_path = self.out_dir / "offsets.json"
+        offsets_path, shear_path = self.out_dir / "offsets.json", self.out_dir / "shear.json"
         if offsets_path.exists() and not self.restitch:
             offsets = {k: (v[0], v[1], v[2]) for k, v in json.loads(offsets_path.read_text()).items()}
-            print(f"reusing {offsets_path}", flush=True)
+            shear = SideShear.from_json(json.loads(shear_path.read_text())) if shear_path.exists() else SideShear()
+            print(f"reusing {offsets_path}{'' if shear_path.exists() else ', unsheared'}", flush=True)
         else:
-            pairs = measure_pairs(lay, load)
+            shear = measure_side_shear(lay, load)
+            vz, vy, _ = lay.voxel_um
+            for label, slope in shear.seam_slopes.items():
+                print(f"{label:16s} z drift along y {slope * vz / vy * 1000:+.1f} um/mm", flush=True)
+            print(f"side shear {shear.per_side} z vox per y vox, seam rms {shear.residual_rms * vz:.1f} um", flush=True)
+            shear_path.write_text(json.dumps(shear.to_json(), indent=1) + "\n")
+            pairs = measure_pairs(lay, load, shear=shear)
             for p in pairs:
                 flag = " AT SEARCH EDGE" if p.at_edge else ""
                 print(
@@ -146,6 +157,7 @@ class Correct:
         sitk.WriteImage(mask, str(self.out_dir / "mask.nii.gz"))
         log_gain = None
         if self.model == "sheet":
+            # overlap samples placed by the offsets alone: the shear moves them under a voxel
             model = fit_sheet_model(lay, load, offsets, raw, mask, mirror_indices(raw, mask), placement=shift)
             model.save(str(self.out_dir / "illumination.npz"))
             log_gain = model.log_illumination
@@ -156,11 +168,11 @@ class Correct:
         nominal, _ = fuse_to_reference(lay, load, reference, log_gain=log_gain, shift=shift, seam_profile=seams)
         sitk.WriteImage(nominal, str(self.out_dir / "fused_nominal.nii.gz"))
         stitched, _ = fuse_to_reference(
-            lay, load, reference, log_gain=log_gain, offsets=offsets, shift=shift, seam_profile=seams
+            lay, load, reference, log_gain=log_gain, offsets=offsets, shift=shift, seam_profile=seams, shear=shear
         )
         sitk.WriteImage(stitched, str(self.out_dir / "fused_stitched.nii.gz"))
         field = nominal_to_stitched_field(
-            lay, offsets, reference, ap_weights=self.annotated_ap_weights, placement=shift
+            lay, offsets, reference, ap_weights=self.annotated_ap_weights, placement=shift, shear=shear
         )
         sitk.WriteImage(field, str(self.out_dir / "nominal_to_stitched.nii.gz"))
         (self.out_dir / "correct.json").write_text(

@@ -1,9 +1,13 @@
 """Tile offsets from overlap correlation, and the point field from a nominal-grid fusion to a stitched one.
 
 Each overlap is searched over every integer shift within a fixed physical window for the highest Pearson correlation
-of log intensity over the tissue both tiles hold there, by FFT, and refined to subvoxel by a parabola per axis; phase
+of log intensity over the tissue both tiles hold there, by FFT, and refined to subvoxel by a local quadratic; phase
 correlation locks onto zero lag on these tiles. Offsets then solve ``offset[later] - offset[earlier] = measured`` by
 correlation-weighted least squares, centered on their median, after dropping pairs the others contradict.
+
+The two illumination sides image planes tilted against each other about x, so across the columns where the side
+changes the z offset drifts along y and no translation fits. Measuring those seams in pieces along y gives one z-y
+shear per side, applied to the tiles before their overlaps are measured and again when they are fused.
 """
 
 from __future__ import annotations
@@ -11,12 +15,13 @@ from __future__ import annotations
 import warnings
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 import SimpleITK as sitk
 from scipy.fft import irfftn, next_fast_len, rfftn
-from scipy.ndimage import distance_transform_edt, gaussian_filter
+from scipy.ndimage import affine_transform, distance_transform_edt, gaussian_filter
 
 from aind_lightsheet_registration.tiles import Tile, TileLayout
 
@@ -53,6 +58,62 @@ class PairShift:
         """Human-readable pair name, with 1-based row and column positions."""
         a, b = self.earlier, self.later
         return f"{self.kind} r{a.row + 1}c{a.col + 1}->r{b.row + 1}c{b.col + 1}"
+
+
+@dataclass(frozen=True)
+class SideShear:
+    """Tilt of each illumination side's imaging plane about x, as a z-y shear of its tiles.
+
+    A tile's content at tile row ``y`` moves ``per_side[side] * (y - center)`` voxels in z when placed, ``center``
+    being the tile's middle row. Overlaps fix only the difference between the sides, so the two sum to zero; a tilt
+    shared by both is a rotation of the whole brain, which registration absorbs.
+
+    Attributes
+    ----------
+    per_side : dict
+        Illumination side → shear (z voxels per y voxel); a side absent from it is not sheared.
+    seam_slopes : dict
+        Side-boundary pair label → its own fitted slope of z shift along y (voxels per voxel), for checking.
+    residual_rms : float
+        Rms (z voxels) of the seam pieces about the shared fit.
+    """
+
+    per_side: dict[int, float] = field(default_factory=dict)
+    seam_slopes: dict[str, float] = field(default_factory=dict)
+    residual_rms: float = 0.0
+
+    def of(self, tile: Tile) -> float:
+        """Shear of ``tile``'s side."""
+        return self.per_side.get(tile.side, 0.0)
+
+    def to_json(self) -> dict[str, object]:
+        """JSON-ready form."""
+        return {
+            "per_side": {str(k): v for k, v in self.per_side.items()},
+            "seam_slopes": self.seam_slopes,
+            "residual_rms": self.residual_rms,
+        }
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> SideShear:
+        """Inverse of :meth:`to_json`."""
+        return cls(
+            {int(k): float(v) for k, v in data["per_side"].items()},
+            dict(data["seam_slopes"]),
+            float(data["residual_rms"]),
+        )
+
+
+def move_tile(stack: np.ndarray, offset: tuple[float, float, float], shear: float) -> np.ndarray:
+    """``stack`` sheared by ``shear`` (z voxels per y voxel about its middle row), then moved by ``offset`` (z, y, x).
+
+    One linear interpolation for both, so placing a tile blurs it no more than a shift alone.
+    """
+    center = (stack.shape[1] - 1) / 2
+    dz, dy, dx = offset
+    matrix = np.array([[1.0, -shear, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+    origin = np.array([-dz + shear * (dy + center), -dy, -dx])
+    return np.asarray(affine_transform(stack, matrix, offset=origin, order=1, mode="nearest"), stack.dtype)
 
 
 def _parabolic_peak(score: np.ndarray, lags: list[np.ndarray], best: np.ndarray) -> np.ndarray:
@@ -293,6 +354,129 @@ def tile_row_profile(
         return np.asarray(np.nan_to_num(np.nanmedian(profiles, axis=0)), float)
 
 
+def _seam_pieces(
+    a: np.ndarray,
+    b: np.ndarray,
+    layout: TileLayout,
+    n_pieces: int,
+    *,
+    margin_um: tuple[float, float, float],
+    tissue_floor: float,
+    min_voxels: int,
+) -> list[tuple[float, float, float]]:
+    """``(row, z shift, correlation)`` of an L→R overlap measured separately in ``n_pieces`` spans of tile rows.
+
+    ``row`` is the span's tissue-weighted mean row in ``a``'s overlap; spans with too little tissue, or a peak at
+    the search edge, are left out.
+    """
+    _, ny, _ = layout.shape
+    ov_x = layout.overlap_px[1]
+    out = []
+    for k in range(n_pieces):
+        rows = slice(k * ny // n_pieces, (k + 1) * ny // n_pieces)
+        ak, bk = np.zeros_like(a), np.zeros_like(b)  # zero is background, outside every mask
+        ak[:, rows], bk[:, rows] = a[:, rows], b[:, rows]
+        m = measure_pair(ak, bk, "LR", layout, margin_um=margin_um, tissue_floor=tissue_floor, min_voxels=min_voxels)
+        if m is None or m[2]:
+            continue
+        tissue = (a[:, rows, -ov_x:] > tissue_floor).sum(axis=(0, 2))
+        if tissue.sum() == 0:
+            continue
+        out.append((float(np.average(np.arange(rows.start, rows.stop), weights=tissue)), float(m[0][0]), m[1]))
+    return out
+
+
+def measure_side_shear(
+    layout: TileLayout,
+    load: Callable[[Tile], np.ndarray],
+    *,
+    n_pieces: int = 3,
+    margin_um: tuple[float, float, float] = (192.0, 172.8, 172.8),
+    tissue_floor: float = 40.0,
+    min_voxels: int = 2000,
+    min_correlation: float = 0.3,
+    row_profile: np.ndarray | None = None,
+) -> SideShear:
+    """Fit each illumination side's z-y shear from the L→R overlaps where the side changes.
+
+    Each such overlap is measured in ``n_pieces`` spans along y; its z shift is ``intercept + slope * row``, with an
+    intercept per overlap and one slope shared by all. Raw tiles read ``slope = shear[right side] - shear[left side]``
+    of the content shear that undoes it. With no such overlap, as on a single-side grid, nothing is sheared.
+
+    Parameters
+    ----------
+    layout : TileLayout
+        The grid.
+    load : callable
+        Returns a tile's dark-subtracted stack.
+    n_pieces : int
+        Spans per overlap.
+    margin_um : tuple of float
+        Search half-width (z, y, x) in µm.
+    tissue_floor : float
+        Intensity below which voxels are background.
+    min_voxels : int
+        Fewest tissue voxels a span's shift needs to be scored.
+    min_correlation : float
+        Lowest peak correlation a span needs to count.
+    row_profile : numpy.ndarray, optional
+        As for :func:`measure_pairs`.
+
+    Returns
+    -------
+    SideShear
+        Shears summing to zero over the two sides.
+    """
+    cross = [(a, b) for kind, a, b in layout.neighbor_pairs() if kind == "LR" and a.side != b.side]
+    if not cross:
+        return SideShear()
+    if row_profile is None:
+        row_profile = tile_row_profile(layout, load, tissue_floor=tissue_floor)
+    flat = np.exp(-row_profile).astype(np.float32)[None, :, None]
+    center = (layout.shape[1] - 1) / 2
+    seams: list[tuple[str, np.ndarray, np.ndarray, np.ndarray]] = []
+    sides = set()
+    for a, b in cross:
+        pieces = [
+            p
+            for p in _seam_pieces(
+                load(a) * flat,
+                load(b) * flat,
+                layout,
+                n_pieces,
+                margin_um=margin_um,
+                tissue_floor=tissue_floor,
+                min_voxels=min_voxels,
+            )
+            if p[2] >= min_correlation
+        ]
+        if len(pieces) >= 2:
+            row, z, corr = (np.array(v) for v in zip(*pieces, strict=True))
+            seams.append((f"LR r{a.row + 1}c{a.col + 1}->r{b.row + 1}c{b.col + 1}", row - center, z, corr))
+            sides.add((a.side, b.side))
+    if not seams:
+        return SideShear()
+    if len(sides) != 1:
+        raise ValueError(f"side-boundary overlaps change side in both directions: {sorted(sides)}")
+    ((left, right),) = sides
+    n = sum(len(z) for _, _, z, _ in seams)
+    design = np.zeros((n, len(seams) + 1))
+    rhs, weight = np.zeros(n), np.zeros(n)
+    i = 0
+    for j, (_, row, z, corr) in enumerate(seams):
+        design[i : i + len(z), j], design[i : i + len(z), -1] = 1, row
+        rhs[i : i + len(z)], weight[i : i + len(z)] = z, corr
+        i += len(z)
+    w = np.sqrt(weight)
+    coef = np.linalg.lstsq(design * w[:, None], rhs * w, rcond=None)[0]
+    slope = float(coef[-1])
+    return SideShear(
+        per_side={left: -slope / 2, right: slope / 2},
+        seam_slopes={label: float(np.polyfit(row, z, 1)[0]) for label, row, z, _ in seams},
+        residual_rms=float(np.sqrt(np.mean((rhs - design @ coef) ** 2))),
+    )
+
+
 def measure_pairs(
     layout: TileLayout,
     load: Callable[[Tile], np.ndarray],
@@ -300,8 +484,9 @@ def measure_pairs(
     margin_um: tuple[float, float, float] = (192.0, 172.8, 172.8),
     tissue_floor: float = 40.0,
     row_profile: np.ndarray | None = None,
+    shear: SideShear | None = None,
 ) -> list[PairShift]:
-    """Measure every overlapping pair, each tile first divided by the tiles' common row profile.
+    """Measure every overlapping pair, each tile first divided by the tiles' common row profile and sheared.
 
     Parameters
     ----------
@@ -315,6 +500,8 @@ def measure_pairs(
         Intensity below which voxels are background.
     row_profile : numpy.ndarray, optional
         Log gain per tile row to divide out; :func:`tile_row_profile` when omitted, zeros to divide out nothing.
+    shear : SideShear, optional
+        From :func:`measure_side_shear`; the measured shifts are then those of the sheared tiles.
 
     Returns
     -------
@@ -330,7 +517,10 @@ def measure_pairs(
 
     def get(t: Tile) -> np.ndarray:
         if t.name not in cache:
-            cache[t.name] = load(t) * flat
+            stack = load(t) * flat
+            if shear is not None and shear.of(t):
+                stack = move_tile(stack, (0.0, 0.0, 0.0), shear.of(t))
+            cache[t.name] = stack
         return cache[t.name]
 
     out = []
@@ -540,13 +730,14 @@ def nominal_to_stitched_field(
     *,
     ap_weights: tuple[float, float] | None,
     placement: tuple[int, int, int] = (0, 0, 0),
+    shear: SideShear | None = None,
 ) -> sitk.Image:
     """Displacement field taking a point in a nominal-grid fusion to the same tissue in the stitched fusion.
 
     A point shows tissue from the tiles covering it, and the stitched fusion moves each tile's content by its offset.
     Where tiles overlap the offset is averaged with the nominal fusion's blending weights, so a point on a blended
     feature moves to the feature's blended position. Beyond the mosaic the nearest covered value is carried, so the
-    field has no step at the footprint's edge. The field is constant along z.
+    field has no step at the footprint's edge. The field is constant along z; a shear makes its z part vary along y.
 
     Parameters
     ----------
@@ -562,6 +753,8 @@ def nominal_to_stitched_field(
     placement : tuple of int
         Voxel shift (z, y, x) of the mosaic within ``reference``, from
         :func:`~aind_lightsheet_registration.fuse.place_on_reference`.
+    shear : SideShear, optional
+        The shear the stitched fusion applied, from :func:`measure_side_shear`.
 
     Returns
     -------
@@ -576,9 +769,13 @@ def nominal_to_stitched_field(
     x = -0.5 + (np.arange(size_x) - placement[2] + 0.5) * spacing_um / voxel_um[2]
     num = np.zeros((size_y, size_x, 3))
     den = np.zeros((size_y, size_x))
+    center = (layout.shape[1] - 1) / 2
     for tile in layout.tiles:
         w = blend_weights(layout, tile, y, x, ap_weights=ap_weights)
-        num += w[..., None] * (np.asarray(offsets[tile.name]) * voxel_um / 1000)
+        moved = np.broadcast_to(np.asarray(offsets[tile.name], float), (size_y, 3)).copy()
+        if shear is not None:
+            moved[:, 0] += shear.of(tile) * (y - tile.row * layout.step_px[0] - center)
+        num += w[..., None] * (moved * voxel_um / 1000)[:, None, :]
         den += w
     covered = den > 0
     d_zyx = np.where(covered[..., None], num / np.maximum(den, 1e-12)[..., None], 0.0)

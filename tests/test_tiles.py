@@ -5,15 +5,17 @@ from dataclasses import replace
 import numpy as np
 import pytest
 import SimpleITK as sitk
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import gaussian_filter, map_coordinates
 from scipy.ndimage import shift as nd_shift
 
 from aind_lightsheet_registration.fuse import fuse_mosaic, place_on_reference
 from aind_lightsheet_registration.stitch import (
+    SideShear,
     _masked_ncc,
     _subvoxel_peak,
     consistent_pairs,
     measure_pairs,
+    measure_side_shear,
     nominal_to_stitched_field,
     solve_offsets,
     solve_residuals,
@@ -239,3 +241,61 @@ def test_field_blends_offsets_across_an_overlap(layout):
     assert dx[ov_start - 5] == 0
     assert dx[layout.shape[2] + 5] == pytest.approx(4 * 0.0036)
     assert np.all(np.diff(dx[ov_start : layout.shape[2]]) > 0)
+
+
+TILT = 0.03  # z voxels per y voxel, each side; the two sides differ by twice this
+
+
+def _tilted(layout, scene):
+    """Tiles whose imaging planes tilt about x by -TILT on side 0 and +TILT on side 1."""
+    nz, ny, nx = layout.shape
+    z, u, v = np.mgrid[:nz, :ny, :nx].astype(float)
+    out = {}
+    for t in layout.tiles:
+        tilt = TILT if t.side == 0 else -TILT
+        coords = [
+            z + 5 - tilt * (u - (ny - 1) / 2),
+            u + 5 + t.row * layout.step_px[0],
+            v + 5 + t.col * layout.step_px[1],
+        ]
+        out[t.name] = map_coordinates(scene, coords, order=1, mode="nearest").astype(np.float32)
+    return out
+
+
+def test_side_shear_closes_the_loop_translations_cannot(layout):
+    scene = _scene(layout)
+    tiles = _tilted(layout, scene)
+    load = lambda t: tiles[t.name]  # noqa: E731
+    shear = measure_side_shear(layout, load, margin_um=MARGIN_UM)
+    assert shear.per_side == pytest.approx({0: -TILT, 1: TILT}, abs=0.004)
+    assert SideShear.from_json(shear.to_json()) == shear
+    # same-side A-P overlaps see one tilt at two depths, so around the grid's loop translations misclose
+    flat = measure_pairs(layout, load, margin_um=MARGIN_UM)
+    assert max(solve_residuals(solve_offsets(layout, flat), flat)) > 0.5
+    pairs = measure_pairs(layout, load, margin_um=MARGIN_UM, shear=shear)
+    offsets = solve_offsets(layout, pairs)
+    assert max(solve_residuals(offsets, pairs)) < 0.25
+    np.testing.assert_allclose(np.array(list(offsets.values())), 0, atol=0.25)
+    nz, my, mx = layout.mosaic_shape
+    truth = np.log(scene[5 : 5 + nz, 5 : 5 + my, 5 : 5 + mx])[2:-2]
+
+    def score(**kw):
+        return np.corrcoef(
+            np.log(sitk.GetArrayFromImage(fuse_mosaic(layout, load, **kw)))[2:-2].ravel(), truth.ravel()
+        )[0, 1]
+
+    assert score(offsets=offsets, shear=shear) > 0.98 > score()
+
+
+def test_field_carries_the_shear_along_y(layout):
+    offsets = {t.name: (0.0, 0.0, 0.0) for t in layout.tiles}
+    shear = SideShear({0: -TILT, 1: TILT})
+    nz, my, mx = layout.mosaic_shape
+    ref = sitk.Image([mx, my, nz], sitk.sitkFloat32)
+    ref.SetSpacing([0.0036] * 3)
+    field = sitk.GetArrayFromImage(nominal_to_stitched_field(layout, offsets, ref, ap_weights=None, shear=shear))
+    y = np.arange(layout.step_px[0])  # first row, before the overlap
+    center = (layout.shape[1] - 1) / 2
+    # ITK component 2 is z; the reference's z spacing is 3.6 um against the level's 4.0
+    np.testing.assert_allclose(field[0, y, 10, 2], -TILT * (y - center) * 0.004, atol=1e-12)
+    np.testing.assert_allclose(field[0, y, mx - 10, 2], TILT * (y - center) * 0.004, atol=1e-12)

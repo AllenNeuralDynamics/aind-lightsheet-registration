@@ -9,11 +9,10 @@ from collections.abc import Callable
 
 import numpy as np
 import SimpleITK as sitk
-from scipy.ndimage import shift as nd_shift
 
 from aind_lightsheet_registration.reader import finish_downsampling
 from aind_lightsheet_registration.seams import SeamProfile, row_starts_mm
-from aind_lightsheet_registration.stitch import Offsets, blend_weights
+from aind_lightsheet_registration.stitch import Offsets, SideShear, blend_weights, move_tile
 from aind_lightsheet_registration.tiles import Tile, TileLayout
 
 
@@ -25,8 +24,9 @@ def fuse_mosaic(
     offsets: Offsets | None = None,
     ap_weights: tuple[float, float] | None = None,
     seam_profile: SeamProfile | None = None,
+    shear: SideShear | None = None,
 ) -> sitk.Image:
-    """Blend the tiles at their nominal positions, or moved by ``offsets``.
+    """Blend the tiles at their nominal positions, or sheared and moved by ``shear`` and ``offsets``.
 
     Parameters
     ----------
@@ -43,6 +43,9 @@ def fuse_mosaic(
         A→P blending; see :func:`~aind_lightsheet_registration.stitch.blend_weights`.
     seam_profile : SeamProfile or None
         Calibrated tile-row seam profile, divided out of the blended mosaic at every row's nominal anterior edge.
+    shear : SideShear or None
+        Per-side z-y shear from :func:`~aind_lightsheet_registration.stitch.measure_side_shear`, applied with the
+        offsets in one interpolation.
 
     Returns
     -------
@@ -59,8 +62,9 @@ def fuse_mosaic(
         stack = load(tile)
         if log_gain is not None:  # in the tile's own frame, before it moves
             stack = stack * np.exp(-log_gain(tile)).astype(np.float32)
-        if offsets is not None:
-            stack = nd_shift(stack, offsets[tile.name], order=1, mode="nearest")
+        if offsets is not None or shear is not None:
+            offset = offsets[tile.name] if offsets is not None else (0.0, 0.0, 0.0)
+            stack = move_tile(stack, offset, shear.of(tile) if shear is not None else 0.0)
         num[:, y0 : y0 + ny, x0 : x0 + nx] += stack * w
         den[y0 : y0 + ny, x0 : x0 + nx] += w
     num /= np.maximum(den, 1e-6)
@@ -126,12 +130,13 @@ def fuse_to_reference(
     ap_weights: tuple[float, float] | None = None,
     shift: tuple[int, int, int] | None = None,
     seam_profile: SeamProfile | None = None,
+    shear: SideShear | None = None,
 ) -> tuple[sitk.Image, tuple[int, int, int]]:
     """:func:`fuse_mosaic`, taken to ``reference``'s spacing and placed on its grid.
 
     Parameters
     ----------
-    layout, load, log_gain, offsets, ap_weights, seam_profile
+    layout, load, log_gain, offsets, ap_weights, seam_profile, shear
         As for :func:`fuse_mosaic`.
     reference : sitk.Image
         Brain whose grid the result takes; isotropic.
@@ -144,6 +149,12 @@ def fuse_to_reference(
         The placed fusion and its shift (z, y, x).
     """
     mosaic = fuse_mosaic(
-        layout, load, log_gain=log_gain, offsets=offsets, ap_weights=ap_weights, seam_profile=seam_profile
+        layout,
+        load,
+        log_gain=log_gain,
+        offsets=offsets,
+        ap_weights=ap_weights,
+        seam_profile=seam_profile,
+        shear=shear,
     )
     return place_on_reference(finish_downsampling(mosaic, reference.GetSpacing()[0]), reference, shift=shift)
