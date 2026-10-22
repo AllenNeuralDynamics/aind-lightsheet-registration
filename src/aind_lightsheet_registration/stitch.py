@@ -8,6 +8,7 @@ correlation-weighted least squares, centered on their median, after dropping pai
 
 from __future__ import annotations
 
+import warnings
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -64,6 +65,38 @@ def _parabolic_peak(score: np.ndarray, lags: list[np.ndarray], best: np.ndarray)
             if den < 0:
                 d[axis] += 0.5 * (y0 - y2) / den
     return d
+
+
+_NEIGHBORS = np.array(list(np.ndindex(3, 3, 3))) - 1
+_QUADRATIC = np.column_stack(
+    [
+        np.ones(27),
+        _NEIGHBORS,
+        _NEIGHBORS**2 / 2,
+        *(_NEIGHBORS[:, i] * _NEIGHBORS[:, j] for i, j in ((0, 1), (0, 2), (1, 2))),
+    ]
+)
+
+
+def _subvoxel_peak(score: np.ndarray, lags: list[np.ndarray], best: np.ndarray) -> np.ndarray:
+    """Lag of the peak of a 3D quadratic fitted to the 27 scores around ``best``.
+
+    The joint fit halves the error of a parabola per axis wherever the peak is oblique to the axes; the per-axis
+    parabola stands in where the neighborhood is incomplete or the fit has no maximum within it.
+    """
+    lo, hi = best - 1, best + 2
+    if np.all(lo >= 0) and np.all(hi <= np.array(score.shape)):
+        local = score[tuple(slice(i, j) for i, j in zip(lo, hi, strict=True))].reshape(-1)
+        if np.all(np.isfinite(local)):
+            c = np.linalg.lstsq(_QUADRATIC, local, rcond=None)[0]
+            hess = np.diag(c[4:7])
+            for (i, j), v in zip(((0, 1), (0, 2), (1, 2)), c[7:10], strict=True):
+                hess[i, j] = hess[j, i] = v
+            if np.all(np.linalg.eigvalsh(hess) < 0):
+                step = -np.linalg.solve(hess, c[1:4])
+                if np.all(np.abs(step) <= 1):
+                    return np.array([lag[i] for lag, i in zip(lags, best, strict=True)], float) + step
+    return _parabolic_peak(np.nan_to_num(score, nan=-1.0), lags, best)
 
 
 def _overlap_strips(
@@ -210,9 +243,54 @@ def measure_pair(
     best = lo + np.array(np.unravel_index(np.nanargmax(near), near.shape))
     at_edge = bool(np.any((peak == 0) | (peak == np.array(coarse.shape) - 1) | (np.abs(best - peak) == refine_voxels)))
     lags = [np.arange(-m, m + 1) for m in margin]
-    d = _parabolic_peak(np.nan_to_num(plain, nan=-1.0), lags, best)
+    d = _subvoxel_peak(plain, lags, best)
     # a voxel k of a's overlap matches b at k + d, so b sits -d from its nominal place relative to a
     return -d, float(plain[tuple(best)]), at_edge
+
+
+def tile_row_profile(
+    layout: TileLayout,
+    load: Callable[[Tile], np.ndarray],
+    *,
+    tissue_floor: float = 40.0,
+    min_tissue_fraction: float = 0.2,
+) -> np.ndarray:
+    """Log brightness of each tile row (y) relative to the tile's middle, pooled over tiles.
+
+    Tiles darken toward their A-P edges, so in an overlap each tile's falloff runs the opposite way to its neighbor's;
+    left in, that shifts the correlation peak along y by several µm. The falloff is the same in every tile, so its
+    median over tiles, where anatomy differs, estimates it without knowing where the tiles sit.
+
+    Parameters
+    ----------
+    layout : TileLayout
+        The grid.
+    load : callable
+        Returns a tile's dark-subtracted stack.
+    tissue_floor : float
+        Intensity below which voxels are background.
+    min_tissue_fraction : float
+        Fewest tissue voxels a tile, or one of its rows, needs to count.
+
+    Returns
+    -------
+    numpy.ndarray
+        Log gain per row, length ``layout.shape[1]``; 0 where no tile has enough tissue.
+    """
+    profiles = []
+    for t in layout.tiles:
+        log = np.log(np.clip(load(t), 1, None))
+        tissue = log > np.log(tissue_floor)
+        if tissue.mean() < min_tissue_fraction:
+            continue
+        rows = np.nanmedian(np.where(tissue, log, np.nan), axis=(0, 2))
+        rows[tissue.mean(axis=(0, 2)) < min_tissue_fraction / 10] = np.nan
+        profiles.append(rows - np.nanmedian(rows))
+    if not profiles:
+        return np.zeros(layout.shape[1])
+    with warnings.catch_warnings():  # rows no tile covers
+        warnings.simplefilter("ignore", RuntimeWarning)
+        return np.nan_to_num(np.nanmedian(profiles, axis=0))
 
 
 def measure_pairs(
@@ -221,8 +299,9 @@ def measure_pairs(
     *,
     margin_um: tuple[float, float, float] = (192.0, 172.8, 172.8),
     tissue_floor: float = 40.0,
+    row_profile: np.ndarray | None = None,
 ) -> list[PairShift]:
-    """Measure every overlapping pair.
+    """Measure every overlapping pair, each tile first divided by the tiles' common row profile.
 
     Parameters
     ----------
@@ -234,19 +313,24 @@ def measure_pairs(
         Search half-width (z, y, x) in µm.
     tissue_floor : float
         Intensity below which voxels are background.
+    row_profile : numpy.ndarray, optional
+        Log gain per tile row to divide out; :func:`tile_row_profile` when omitted, zeros to divide out nothing.
 
     Returns
     -------
     list of PairShift
         One per overlap with enough tissue.
     """
+    if row_profile is None:
+        row_profile = tile_row_profile(layout, load, tissue_floor=tissue_floor)
+    flat = np.exp(-row_profile).astype(np.float32)[None, :, None]
     neighbors = list(layout.neighbor_pairs())
     uses = Counter(t.name for _, a, b in neighbors for t in (a, b))
     cache: dict[str, np.ndarray] = {}
 
     def get(t: Tile) -> np.ndarray:
         if t.name not in cache:
-            cache[t.name] = load(t)
+            cache[t.name] = load(t) * flat
         return cache[t.name]
 
     out = []

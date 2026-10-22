@@ -11,11 +11,13 @@ from scipy.ndimage import shift as nd_shift
 from aind_lightsheet_registration.fuse import fuse_mosaic, place_on_reference
 from aind_lightsheet_registration.stitch import (
     _masked_ncc,
+    _subvoxel_peak,
     consistent_pairs,
     measure_pairs,
     nominal_to_stitched_field,
     solve_offsets,
     solve_residuals,
+    tile_row_profile,
 )
 from aind_lightsheet_registration.tiles import TileLayout, choose_tile_level
 
@@ -139,6 +141,31 @@ def test_contradicted_pair_is_dropped():
     expected = -np.array(list(true.values()), float)
     expected -= np.median(expected, axis=0)
     np.testing.assert_allclose(np.array(list(solve_offsets(lay, pairs).values())), expected, atol=0.25)
+
+
+def test_common_edge_falloff_is_divided_out(layout):
+    true = dict(zip([t.name for t in layout.tiles], [(0, 0, 0), (1, -1, 1), (-1, 1, 0), (0, 1, -1)], strict=True))
+    y = np.arange(layout.shape[1])
+    falloff = -0.5 * (np.exp(-y / 6) + np.exp(-(y[::-1]) / 6))  # darker toward both A-P edges
+    # bright enough that the dimmed edges stay above the tissue floor
+    plain = {k: 3 * v for k, v in _cut(layout, _scene(layout), true).items()}
+    tiles = {k: v * np.exp(falloff)[None, :, None].astype(np.float32) for k, v in plain.items()}
+    # four tiles leave the scene's own row-to-row texture in the profile; the falloff adds on top of it
+    added = tile_row_profile(layout, lambda t: tiles[t.name]) - tile_row_profile(layout, lambda t: plain[t.name])
+    np.testing.assert_allclose(added - np.median(added), falloff - np.median(falloff), atol=0.05)
+    pairs = measure_pairs(layout, lambda t: tiles[t.name], margin_um=MARGIN_UM)
+    expected = -np.array(list(true.values()), float)
+    expected -= np.median(expected, axis=0)
+    np.testing.assert_allclose(np.array(list(solve_offsets(layout, pairs).values())), expected, atol=0.25)
+
+
+def test_subvoxel_peak_finds_an_oblique_maximum():
+    peak = np.array([0.3, -0.4, 0.2])
+    hess = np.array([[-2.0, 0.8, 0.3], [0.8, -1.5, -0.4], [0.3, -0.4, -1.0]])
+    lags = [np.arange(-2, 3)] * 3
+    grid = np.stack(np.meshgrid(*lags, indexing="ij"), -1) - peak
+    score = 0.5 * np.einsum("...i,ij,...j->...", grid, hess, grid)
+    np.testing.assert_allclose(_subvoxel_peak(score, lags, np.array([2, 2, 2])), peak, atol=1e-9)
 
 
 def test_unplaceable_tile_is_an_error(layout):
