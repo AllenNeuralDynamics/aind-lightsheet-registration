@@ -290,7 +290,7 @@ def tile_row_profile(
         return np.zeros(layout.shape[1])
     with warnings.catch_warnings():  # rows no tile covers
         warnings.simplefilter("ignore", RuntimeWarning)
-        return np.nan_to_num(np.nanmedian(profiles, axis=0))
+        return np.asarray(np.nan_to_num(np.nanmedian(profiles, axis=0)), float)
 
 
 def measure_pairs(
