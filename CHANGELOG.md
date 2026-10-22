@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.0 (2026-10-22)
+
+### Feat
+
+- correct the olfactory-bulb shadow per brain against the template
+- divide out the dips at the focus-ramp planes
+- fit a z-y shear per illumination side before stitching
+- divide out the tiles' common row profile before measuring overlaps
+- search tile overlaps over a wide window by FFT and drop contradicted pairs
+
+### Fix
+
+- return a typed array from tile_row_profile
+
 ## v0.3.1 (2026-10-21)
 
 ## v0.3.0 (2026-10-21)
