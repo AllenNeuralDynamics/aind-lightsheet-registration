@@ -11,6 +11,7 @@ from typing import Annotated, Literal
 import numpy as np
 import SimpleITK as sitk
 import tyro
+from aind_registration_utils.ants_cli import SynRegistrationResult
 
 from aind_lightsheet_registration.annotations import (
     brain_to_ccf_transforms,
@@ -23,9 +24,11 @@ from aind_lightsheet_registration.focus import estimate_focus_ramp, plane_depths
 from aind_lightsheet_registration.fuse import fuse_to_reference
 from aind_lightsheet_registration.illumination import fit_sheet_model
 from aind_lightsheet_registration.mirror import mirror_indices
+from aind_lightsheet_registration.olfactory import correct_bulb_shadow
 from aind_lightsheet_registration.prepare import Normalization, brain_mask, set_orientation
 from aind_lightsheet_registration.register import (
     WORKING_SPACING_MM,
+    PreparedBrain,
     Template,
     prepare_image,
     register_to_template,
@@ -271,7 +274,12 @@ class CalibrateSeams:
 
 @dataclass
 class Register:
-    """Mask, N4-correct and normalize a brain image, then register it to a template with ANTs."""
+    """Mask, N4-correct and normalize a brain image, then register it to a template with ANTs.
+
+    With ``olfactory_mask`` and ``bulb_zero_level`` the brain is registered, its olfactory-bulb shadow measured against
+    the template and divided out, and the corrected brain registered again into ``registration``; the first
+    registration is kept in ``registration_uncorrected``.
+    """
 
     image: Path
     """Brain at the working resolution, e.g. fused_nominal.nii.gz."""
@@ -294,9 +302,15 @@ class Register:
     threads: int | None = None
     ants_path: Path | None = None
     """Directory holding the ANTs binaries."""
+    olfactory_mask: Path | None = None
+    """Template-grid mask of the olfactory bulb, accessory bulb, anterior olfactory nucleus and taenia tecta."""
+    bulb_zero_level: Path | None = None
+    """The template's bulb-shadow zero level, shipped beside it."""
 
     def run(self) -> None:
         """Run the step."""
+        if (self.olfactory_mask is None) != (self.bulb_zero_level is None):
+            raise ValueError("the bulb correction needs both olfactory_mask and bulb_zero_level")
         image = sitk.ReadImage(str(self.image))
         if self.orientation is not None:
             image = set_orientation(image, self.orientation)
@@ -306,17 +320,32 @@ class Register:
             normalization=self.template_normalization,
             record={"image": str(self.image), "orientation_override": self.orientation},
         )
-        result = register_to_template(
-            prepared,
-            Template(self.template, self.template_mask, self.template_normalization, self.template_clip),
-            self.out_dir / "registration",
-            working_spacing_mm=self.working_spacing_mm,
-            orientation_check=self.orientation_check,
-            expected_orientation=self.expected_orientation,
-            threads=self.threads,
-            ants_path=self.ants_path,
+        template = Template(self.template, self.template_mask, self.template_normalization, self.template_clip)
+
+        def register(brain: PreparedBrain, name: str, orientation_check: bool) -> SynRegistrationResult:
+            result = register_to_template(
+                brain,
+                template,
+                self.out_dir / name,
+                working_spacing_mm=self.working_spacing_mm,
+                orientation_check=orientation_check,
+                expected_orientation=self.expected_orientation,
+                threads=self.threads,
+                ants_path=self.ants_path,
+            )
+            print(f"{name} done in {result.duration_seconds / 60:.1f} min", flush=True)
+            return result
+
+        if self.olfactory_mask is None or self.bulb_zero_level is None:
+            register(prepared, "registration", self.orientation_check)
+            return
+        first = register(prepared, "registration_uncorrected", self.orientation_check)
+        corrected = correct_bulb_shadow(
+            prepared, first.sidecar, template, self.olfactory_mask, self.bulb_zero_level, self.out_dir / "bulb"
         )
-        print(f"registration done in {result.duration_seconds / 60:.1f} min", flush=True)
+        record = json.loads((self.out_dir / "bulb" / "bulb_shadow.json").read_text())
+        print(f"bulb shadow over {record['covered_columns']} columns, median {record['sharp_map_median']:+.3f}")
+        register(corrected, "registration", False)  # the first registration already checked the axes
 
 
 @dataclass
