@@ -17,7 +17,7 @@ version = "0.4.0"
 
 dependencies = [
     "aind-registration-utils>=0.5,<0.6",
-    "aind-zarr-utils>=0.17.2,<0.18",
+    "aind-zarr-utils>=0.18,<0.19",
     "fsspec>=2024.6",
     "numpy>=2,<3",
     "ome-zarr>=0.7",

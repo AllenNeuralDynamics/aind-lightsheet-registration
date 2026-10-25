@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -95,7 +95,7 @@ types = [
 [package.metadata]
 requires-dist = [
     { name = "aind-registration-utils", specifier = ">=0.5,<0.6" },
-    { name = "aind-zarr-utils", specifier = ">=0.17.2,<0.18" },
+    { name = "aind-zarr-utils", specifier = ">=0.18,<0.19" },
     { name = "fsspec", specifier = ">=2024.6" },
     { name = "numpy", specifier = ">=2,<3" },
     { name = "ome-zarr", specifier = ">=0.7" },
@@ -173,7 +173,7 @@ wheels = [
 
 [[package]]
 name = "aind-zarr-utils"
-version = "0.17.2"
+version = "0.18.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aind-anatomical-utils" },
@@ -188,9 +188,9 @@ dependencies = [
     { name = "s3fs" },
     { name = "simpleitk" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/0e/d8/21c4c06fa663ee48a5986ff61623f9148f181a4eb40bc108bffb298bbb4c/aind_zarr_utils-0.17.2.tar.gz", hash = "sha256:f8fa5bf251770b1ff1935a5248b58b6c8178b065bc9374eaa96fc42d5a1df012", size = 460129, upload-time = "2026-10-16T00:04:04.069Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/75/90/216520a6d6330030c373088219c086096657ebe779ca0dbee80d56e0936a/aind_zarr_utils-0.18.0.tar.gz", hash = "sha256:898db68f942377279e25d36c4724a1fcadf5e7aeda5836b1be1780e56286d8a9", size = 566717, upload-time = "2026-10-26T00:20:02.363Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/10/4b/1b25876ae196421bf68a183d9c3f296660b20008da37ef6cdccfc3a712d2/aind_zarr_utils-0.17.2-py3-none-any.whl", hash = "sha256:809dc4b5b451199d8553d01066d8002162731bc475e8260bc46cb5768700d18f", size = 67352, upload-time = "2026-10-16T00:04:02.855Z" },
+    { url = "https://files.pythonhosted.org/packages/9e/a0/5c15ccadb7f133f2b2dccf3c151ac360d01c2733f4edab23f626fff75d96/aind_zarr_utils-0.18.0-py3-none-any.whl", hash = "sha256:4518cdccc085ace3f46b6a9d767f3a736fec2366abab6fa355ff7dc9cab6e56e", size = 67937, upload-time = "2026-10-26T00:20:01.265Z" },
 ]
 
 [[package]]

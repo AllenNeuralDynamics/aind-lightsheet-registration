@@ -15,7 +15,7 @@ from aind_zarr_utils.zarr import zarr_to_sitk, zarr_to_sitk_stub
 from ome_zarr.io import parse_url
 from ome_zarr.reader import Reader
 
-from aind_lightsheet_registration.pyramid import choose_level, extra_sigma, level_center_offset
+from aind_lightsheet_registration.pyramid import choose_level, extra_sigma
 
 Spacing = tuple[float, float, float]
 
@@ -69,11 +69,8 @@ def read_level(
     stubs = [zarr_to_sitk_stub(uri, nd_metadata, level=k, opened_zarr=opened)[0] for k in range(len(node.data))]
     spacings = tuple(_spacing(stub) for stub in stubs)
     level = choose_level(spacings, target_spacing_mm)
-    offset = level_center_offset(spacings[0], spacings[level])
-    origin = stubs[0].TransformContinuousIndexToPhysicalPoint(offset)
-    image = zarr_to_sitk(
-        uri, nd_metadata, level=level, set_origin=origin, opened_zarr=opened, compute_kwargs=compute_kwargs
-    )
+    # aind-zarr-utils places the level over the level-0 voxels it averages.
+    image = zarr_to_sitk(uri, nd_metadata, level=level, opened_zarr=opened, compute_kwargs=compute_kwargs)
     return LevelRead(image=image, level=level, level_spacings=spacings)
 
 

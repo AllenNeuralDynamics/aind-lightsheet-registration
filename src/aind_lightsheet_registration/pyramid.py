@@ -79,22 +79,3 @@ def choose_level(level_spacings: Sequence[Sequence[float]], target_spacing: floa
     if not candidates:
         raise ValueError(f"No level is as fine as {target_spacing}; the finest is {tuple(level_spacings[0])}")
     return max(candidates)
-
-
-def level_center_offset(base_spacing: Sequence[float], level_spacing: Sequence[float]) -> tuple[float, ...]:
-    """Continuous base-level index of a level's first voxel center, per axis.
-
-    A level voxel averages the base voxels beneath it, so its center sits half a block minus half a base voxel
-    from the first base voxel's center. Placing every level with this offset keeps them in one physical frame.
-
-    Parameters
-    ----------
-    base_spacing, level_spacing : sequence of float
-        Spacing of the full-resolution level and of the level read, per axis.
-
-    Returns
-    -------
-    tuple of float
-        Offset in base-level voxels, per axis.
-    """
-    return tuple((level / base - 1) / 2 for base, level in zip(base_spacing, level_spacing, strict=True))
