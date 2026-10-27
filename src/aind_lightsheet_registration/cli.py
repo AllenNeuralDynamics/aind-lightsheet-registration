@@ -21,6 +21,7 @@ from aind_lightsheet_registration.annotations import (
 )
 from aind_lightsheet_registration.destripe import destripe_stack
 from aind_lightsheet_registration.focus import estimate_focus_ramp, plane_depths_um, ramp_depths_um
+from aind_lightsheet_registration.frames import move_image, pipeline_to_zarr_transform
 from aind_lightsheet_registration.fuse import fuse_to_reference
 from aind_lightsheet_registration.illumination import fit_sheet_model
 from aind_lightsheet_registration.mirror import mirror_indices
@@ -384,12 +385,44 @@ class MapAnnotations:
         print(f"{self.out_csv}: {len(mapped)} points in {len(points)} layers")
 
 
+@dataclass
+class PipelineToZarr:
+    """Move images drawn on the SmartSPIM pipeline's prepared brain (prep_n4bias) into the stitched Zarr's frame.
+
+    Only headers change. Registration and label terms in this package expect the Zarr frame.
+    """
+
+    zarr_uri: str
+    """The fused channel the pipeline registered."""
+    nd_metadata: Path
+    """The stitched asset's ``metadata.nd.json``, which holds acquisition and processing."""
+    images: list[Path]
+    """Pipeline-frame images, e.g. prep_n4bias.nii.gz and masks drawn on it."""
+    out_dir: Path
+    """Written as ``<name>_zarr_frame.nii.gz``."""
+
+    def run(self) -> None:
+        """Run the step."""
+        import fsspec.config
+
+        fsspec.config.conf.setdefault("s3", {}).setdefault("anon", True)
+        metadata = json.loads(self.nd_metadata.read_text())
+        transform = pipeline_to_zarr_transform(self.zarr_uri, metadata, metadata["processing"])
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        for path in self.images:
+            stem = path.name.split(".")[0]
+            out = self.out_dir / f"{stem}_zarr_frame.nii.gz"
+            sitk.WriteImage(move_image(sitk.ReadImage(str(path)), transform), str(out))
+            print(out)
+
+
 Command = (
     Annotated[Fetch, tyro.conf.subcommand("fetch")]
     | Annotated[Correct, tyro.conf.subcommand("correct")]
     | Annotated[CalibrateSeams, tyro.conf.subcommand("calibrate-seams")]
     | Annotated[Register, tyro.conf.subcommand("register")]
     | Annotated[MapAnnotations, tyro.conf.subcommand("map-annotations")]
+    | Annotated[PipelineToZarr, tyro.conf.subcommand("pipeline-to-zarr")]
 )
 
 
