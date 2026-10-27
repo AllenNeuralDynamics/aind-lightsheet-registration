@@ -477,9 +477,11 @@ def write_label_terms(
             mask = sitk.Cast(fraction >= 0.5, sitk.sitkUInt8)
             voxels = sitk.GetArrayViewFromImage(mask).astype(bool)
             if not voxels.any():
-                raise ValueError(f"{side} label {term.name!r} ({path}) is empty on the registration grid")
+                raise ValueError(
+                    f"{side} label {term.name!r} ({path}) is empty on the registration grid; is it in the right frame?"
+                )
             if tissue_path is not None:
-                tissue = sitk.GetArrayViewFromImage(sitk.ReadImage(str(tissue_path))) != 0
+                tissue = sitk.GetArrayFromImage(sitk.ReadImage(str(tissue_path))) != 0
                 in_tissue = (voxels & tissue).sum() / voxels.sum()
                 if in_tissue < min_in_tissue:
                     raise ValueError(
