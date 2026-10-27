@@ -13,11 +13,13 @@ from aind_registration_utils.chains import SynTransform, transform_points
 from aind_lightsheet_registration.register import (
     SIDECAR_NAME,
     WORKING_SPACING_MM,
+    LabelTerm,
     PreparedBrain,
     Template,
     prepare_brain,
     register_to_template,
     registration_config,
+    write_label_terms,
     write_registration_inputs,
 )
 from tests.conftest import write_pyramid
@@ -167,3 +169,66 @@ def test_register_to_template_refuses_a_brain_normalized_for_another_template(tm
     brain.front_end.write_text(json.dumps({"normalization": "percentile"}))
     with pytest.raises(ValueError, match="normalized as 'percentile'"):
         register_to_template(brain, template, tmp_path / "reg", working_spacing_mm=0.05)
+
+
+def test_label_terms_are_distance_maps_on_the_registration_grids(tmp_path):
+    """A brain label drawn at 25 µm lands on the 50 µm moving grid, negative inside and saturating outside."""
+    fixed_image, fixed_label = _phantom((0.0, 0.0, 0.0), spacing=0.05)
+    fine_label = sitk.GetImageFromArray(_ellipsoid((96, 96, 96), (48, 48, 48), (32, 36, 40)).astype(np.uint8))
+    fine_label.SetSpacing((0.025,) * 3)
+    moving_image, _ = _phantom((0.0, 0.0, 0.0), spacing=0.05)
+    paths = {n: tmp_path / f"{n}.nii.gz" for n in ("fixed", "moving", "fixed_label", "brain_label")}
+    for image, name in [(fixed_image, "fixed"), (moving_image, "moving"), (fixed_label, "fixed_label")]:
+        sitk.WriteImage(image, str(paths[name]))
+    sitk.WriteImage(fine_label, str(paths["brain_label"]))
+    term = LabelTerm("ac", paths["fixed_label"], paths["brain_label"], weight=0.2)
+
+    (metric,) = write_label_terms([term], paths["fixed"], paths["moving"], tmp_path)
+
+    assert (metric.metric, metric.weight) == ("MeanSquares", 0.2)
+    moving_map = sitk.ReadImage(metric.moving)
+    assert moving_map.GetSize() == moving_image.GetSize()
+    values = sitk.GetArrayFromImage(moving_map)
+    assert values[24, 24, 24] < -0.9 and values[0, 0, 0] > 0.9
+
+
+def test_an_empty_label_is_refused(tmp_path):
+    image, label = _phantom((0.0, 0.0, 0.0), spacing=0.05)
+    paths = [tmp_path / f"{n}.nii.gz" for n in ("image", "label", "empty")]
+    sitk.WriteImage(image, str(paths[0]))
+    sitk.WriteImage(label, str(paths[1]))
+    sitk.WriteImage(label * 0, str(paths[2]))
+    with pytest.raises(ValueError, match="brain label 'ac'"):
+        write_label_terms([LabelTerm("ac", paths[1], paths[2])], paths[0], paths[0], tmp_path)
+
+
+def test_a_label_value_is_only_inside_or_outside(tmp_path):
+    image, tissue = _phantom((0.0, 0.0, 0.0), spacing=0.05)
+    paths = {n: tmp_path / f"{n}.nii.gz" for n in ("image", "one", "five")}
+    sitk.WriteImage(image, str(paths["image"]))
+    sitk.WriteImage(tissue, str(paths["one"]))
+    sitk.WriteImage(tissue * 5, str(paths["five"]))
+    (metric,) = write_label_terms(
+        [LabelTerm("ac", paths["one"], paths["five"])], paths["image"], paths["image"], tmp_path
+    )
+    maps = [sitk.GetArrayFromImage(sitk.ReadImage(m)) for m in (metric.fixed, metric.moving)]
+    np.testing.assert_array_equal(*maps)
+
+
+def test_a_label_outside_tissue_is_refused(tmp_path):
+    image, tissue = _phantom((0.0, 0.0, 0.0), spacing=0.05)
+    outside = sitk.GetImageFromArray(_ellipsoid((48, 48, 48), (3, 3, 3), (3, 3, 3)).astype(np.uint8))
+    outside.CopyInformation(tissue)
+    paths = {n: tmp_path / f"{n}.nii.gz" for n in ("image", "tissue", "outside")}
+    for img, name in [(image, "image"), (tissue, "tissue"), (outside, "outside")]:
+        sitk.WriteImage(img, str(paths[name]))
+    term = LabelTerm("ac", paths["tissue"], paths["outside"])
+    with pytest.raises(ValueError, match="brain label 'ac'.*right frame"):
+        write_label_terms(
+            [term],
+            paths["image"],
+            paths["image"],
+            tmp_path,
+            fixed_tissue=paths["tissue"],
+            moving_tissue=paths["tissue"],
+        )

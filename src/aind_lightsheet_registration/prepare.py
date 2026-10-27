@@ -89,6 +89,32 @@ def dilate_mask(mask: sitk.Image, radius_mm: float) -> sitk.Image:
     return grown
 
 
+def signed_distance_map(mask: sitk.Image, scale_mm: float = 0.3) -> sitk.Image:
+    """``tanh(d / scale_mm)`` of the signed distance ``d`` to a mask's boundary, negative inside.
+
+    Matching two of these by mean squares pulls a structure toward its counterpart from up to a few ``scale_mm``
+    away; a binary mask gives no gradient off its boundary, and an unsaturated distance lets far voxels dominate.
+
+    Parameters
+    ----------
+    mask : sitk.Image
+        UInt8 mask.
+    scale_mm : float
+        Distance over which the map saturates.
+
+    Returns
+    -------
+    sitk.Image
+        Float32 map in (-1, 1) on the mask's grid.
+    """
+    distance = sitk.SignedMaurerDistanceMap(
+        sitk.Cast(mask > 0, sitk.sitkUInt8), insideIsPositive=False, squaredDistance=False, useImageSpacing=True
+    )
+    mapped = sitk.GetImageFromArray(np.tanh(sitk.GetArrayViewFromImage(distance) / scale_mm).astype(np.float32))
+    mapped.CopyInformation(mask)
+    return mapped
+
+
 def block_average(image: sitk.Image, factor: int) -> sitk.Image:
     """Average ``factor``-cubed blocks, keeping the physical extent; voxels past the last whole block are dropped.
 

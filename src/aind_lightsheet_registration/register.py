@@ -7,12 +7,14 @@ brain into the template.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 import SimpleITK as sitk
 from aind_registration_utils.ants_cli import (
+    ExtraMetric,
     LinearConfig,
     RegistrationConfig,
     SynConfig,
@@ -33,6 +35,7 @@ from aind_lightsheet_registration.prepare import (
     n4_correct,
     normalize_iqr,
     normalize_percentiles,
+    signed_distance_map,
     write_transform,
 )
 from aind_lightsheet_registration.reader import finish_downsampling, read_level
@@ -96,6 +99,33 @@ class Template:
     mask: Path
     normalization: Normalization = "iqr"
     clip: tuple[float, float] | None = None
+
+
+@dataclass(frozen=True)
+class LabelTerm:
+    """One structure labeled in both template and brain, matched in SyN by the mean squares of their distance maps.
+
+    The term constrains the registration, so the structure no longer measures its accuracy.
+
+    Attributes
+    ----------
+    name : str
+        Names the written distance maps.
+    template : Path
+        Mask on the template's grid.
+    brain : Path
+        Mask in the brain's physical frame, on any grid; resampled onto the working grid.
+    weight : float
+        Weight beside the image metric's 1.
+    scale_mm : float
+        Saturation distance of :func:`~aind_lightsheet_registration.prepare.signed_distance_map`.
+    """
+
+    name: str
+    template: Path
+    brain: Path
+    weight: float = 0.1
+    scale_mm: float = 0.3
 
 
 @dataclass(frozen=True)
@@ -262,6 +292,7 @@ def register_to_template(
     mask_dilation_mm: float = 0.4,
     orientation_check: bool = True,
     expected_orientation: str | None = None,
+    labels: Sequence[LabelTerm] = (),
     threads: int | None = None,
     ants_path: Path | None = None,
 ) -> SynRegistrationResult:
@@ -285,6 +316,8 @@ def register_to_template(
         Refuse a brain that fits the template far better under another axis rotation of its directions.
     expected_orientation : str or None
         Axis code the brain's directions should have; a mismatch warns. The only check that catches a mirror.
+    labels : sequence of LabelTerm
+        Structures added to the SyN stage as extra metrics.
     threads : int or None
         ITK thread count; ``None`` leaves ITK's default.
     ants_path : Path or None
@@ -313,6 +346,9 @@ def register_to_template(
         config,
         fixed_mask=fixed_mask,
         moving_mask=moving_mask,
+        extra_metrics=write_label_terms(
+            labels, fixed, moving, out_dir / "inputs", fixed_tissue=fixed_mask, moving_tissue=moving_mask
+        ),
         initial_transform=initial,
         ants_path=ants_path,
     )
@@ -324,6 +360,9 @@ def register_to_template(
                 "brain": {k: str(v) for k, v in asdict(brain).items()},
                 "mask_dilation_mm": mask_dilation_mm,
                 "working_spacing_mm": working_spacing_mm,
+                "labels": [
+                    {k: v if isinstance(v, str | float) else str(v) for k, v in asdict(t).items()} for t in labels
+                ],
             },
             indent=2,
         )
@@ -387,6 +426,71 @@ def write_registration_inputs(
         center_of_mass_transform(template_mask, brain_tissue), inputs / "initial_center_of_mass.mat"
     )
     return fixed, moving, fixed_mask, moving_mask, initial
+
+
+def write_label_terms(
+    labels: Sequence[LabelTerm],
+    fixed: Path,
+    moving: Path,
+    inputs: Path,
+    *,
+    fixed_tissue: Path | None = None,
+    moving_tissue: Path | None = None,
+    min_in_tissue: float = 0.5,
+) -> list[ExtraMetric]:
+    """Write each label's distance maps on the fixed and moving grids and return their SyN metrics.
+
+    Any nonzero voxel of a label is inside it, whatever value a segmentation tool stored.
+
+    Parameters
+    ----------
+    labels : sequence of LabelTerm
+        Structures to match.
+    fixed, moving : Path
+        Images the SyN stage registers; their grids receive the maps.
+    inputs : Path
+        Directory for the maps.
+    fixed_tissue, moving_tissue : Path or None
+        Tissue masks on the fixed and moving grids; a label mostly outside its side's mask is refused.
+    min_in_tissue : float
+        Fraction of a label's voxels that must lie in tissue.
+
+    Returns
+    -------
+    list of ExtraMetric
+        One MeanSquares metric per label.
+
+    Raises
+    ------
+    ValueError
+        If a label is empty on its grid or mostly outside tissue, which a mask in the wrong frame usually is.
+    """
+    metrics = []
+    for term in labels:
+        maps = []
+        sides = (("template", term.template, fixed, fixed_tissue), ("brain", term.brain, moving, moving_tissue))
+        for side, path, grid, tissue_path in sides:
+            reference = sitk.ReadImage(str(grid))
+            inside = sitk.Cast(sitk.ReadImage(str(path)) != 0, sitk.sitkFloat32)
+            # linear on the mask fraction, so a mask drawn finer than the working grid keeps its boundary
+            fraction = sitk.Resample(inside, reference, sitk.Transform(), sitk.sitkLinear, 0.0)
+            mask = sitk.Cast(fraction >= 0.5, sitk.sitkUInt8)
+            voxels = sitk.GetArrayViewFromImage(mask).astype(bool)
+            if not voxels.any():
+                raise ValueError(f"{side} label {term.name!r} ({path}) is empty on the registration grid")
+            if tissue_path is not None:
+                tissue = sitk.GetArrayViewFromImage(sitk.ReadImage(str(tissue_path))) != 0
+                in_tissue = (voxels & tissue).sum() / voxels.sum()
+                if in_tissue < min_in_tissue:
+                    raise ValueError(
+                        f"{side} label {term.name!r} ({path}) has {in_tissue:.0%} of its voxels in tissue; "
+                        "is it in the right frame?"
+                    )
+            out = inputs / f"label_{term.name}_{side}_sdm.nii.gz"
+            sitk.WriteImage(signed_distance_map(mask, term.scale_mm), str(out))
+            maps.append(str(out))
+        metrics.append(ExtraMetric(fixed=maps[0], moving=maps[1], metric="MeanSquares", weight=term.weight))
+    return metrics
 
 
 def _block_factor(spacing: tuple[float, ...], working_spacing_mm: float) -> int:
