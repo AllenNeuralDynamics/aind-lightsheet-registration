@@ -164,6 +164,22 @@ def test_percentile_template_is_rescaled(tmp_path):
     assert fixed != template.image and (values.min(), values.max()) == (0.0, 1.0)
 
 
+def test_exclude_cuts_a_hole_the_dilation_does_not_fill(tmp_path):
+    brain, template = _write_pair(tmp_path, 0.05, 0.05)
+    tissue = sitk.ReadImage(str(brain.mask))
+    centre = [n // 2 for n in tissue.GetSize()]
+    bleed = sitk.Image(tissue.GetSize(), sitk.sitkUInt8)
+    bleed.CopyInformation(tissue)
+    bleed[centre] = 1
+    sitk.WriteImage(bleed, str(tmp_path / "bleed.nii.gz"))
+    *_, moving_mask, _ = write_registration_inputs(
+        brain, template, tmp_path / "inputs", working_spacing_mm=0.05, exclude=tmp_path / "bleed.nii.gz"
+    )
+    mask = sitk.ReadImage(str(moving_mask))
+    assert tissue[centre] == 1 and mask[centre] == 0
+    assert int(sitk.GetArrayViewFromImage(mask).sum()) > int(sitk.GetArrayViewFromImage(tissue).sum())
+
+
 def test_register_to_template_refuses_a_brain_normalized_for_another_template(tmp_path):
     brain, template = _write_pair(tmp_path, 0.05, 0.05)
     brain.front_end.write_text(json.dumps({"normalization": "percentile"}))

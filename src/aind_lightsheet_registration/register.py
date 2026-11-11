@@ -293,6 +293,7 @@ def register_to_template(
     orientation_check: bool = True,
     expected_orientation: str | None = None,
     labels: Sequence[LabelTerm] = (),
+    exclude: Path | None = None,
     threads: int | None = None,
     ants_path: Path | None = None,
 ) -> SynRegistrationResult:
@@ -318,6 +319,9 @@ def register_to_template(
         Axis code the brain's directions should have; a mismatch warns. The only check that catches a mirror.
     labels : sequence of LabelTerm
         Structures added to the SyN stage as extra metrics.
+    exclude : Path or None
+        Mask in the brain's physical frame, on any grid, of tissue no metric may sample, such as a bleed whose
+        contrast the template lacks; the warp there follows the surrounding tissue.
     threads : int or None
         ITK thread count; ``None`` leaves ITK's default.
     ants_path : Path or None
@@ -338,6 +342,7 @@ def register_to_template(
         mask_dilation_mm=mask_dilation_mm,
         orientation_check=orientation_check,
         expected_orientation=expected_orientation,
+        exclude=exclude,
     )
     reg = build_registration(
         fixed,
@@ -360,6 +365,7 @@ def register_to_template(
                 "brain": {k: str(v) for k, v in asdict(brain).items()},
                 "mask_dilation_mm": mask_dilation_mm,
                 "working_spacing_mm": working_spacing_mm,
+                "exclude": None if exclude is None else str(exclude),
                 "labels": [
                     {k: v if isinstance(v, str | float) else str(v) for k, v in asdict(t).items()} for t in labels
                 ],
@@ -380,6 +386,7 @@ def write_registration_inputs(
     mask_dilation_mm: float = 0.4,
     orientation_check: bool = True,
     expected_orientation: str | None = None,
+    exclude: Path | None = None,
 ) -> tuple[Path, Path, Path, Path, Path]:
     """Write the images, masks and initial transform ANTs registers, after checking brain and template agree.
 
@@ -421,7 +428,14 @@ def write_registration_inputs(
     sitk.WriteImage(block_average(brain_image, factor), str(moving))
     brain_tissue = block_average_mask(brain_tissue, factor)
     sitk.WriteImage(dilate_mask(template_mask, mask_dilation_mm), str(fixed_mask))
-    sitk.WriteImage(dilate_mask(brain_tissue, mask_dilation_mm), str(moving_mask))
+    moving_tissue = dilate_mask(brain_tissue, mask_dilation_mm)
+    if exclude is not None:
+        # after the dilation, which would otherwise fill the hole; any working voxel the mask touches is dropped
+        touched = sitk.Resample(
+            sitk.ReadImage(str(exclude), sitk.sitkFloat32), moving_tissue, sitk.Transform(), sitk.sitkLinear, 0.0
+        )
+        moving_tissue = moving_tissue * sitk.Cast(touched <= 0, moving_tissue.GetPixelID())
+    sitk.WriteImage(moving_tissue, str(moving_mask))
     initial = write_transform(
         center_of_mass_transform(template_mask, brain_tissue), inputs / "initial_center_of_mass.mat"
     )
