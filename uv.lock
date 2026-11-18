@@ -95,7 +95,7 @@ types = [
 [package.metadata]
 requires-dist = [
     { name = "aind-registration-utils", specifier = ">=0.5" },
-    { name = "aind-zarr-utils", specifier = ">=0.18,<0.19" },
+    { name = "aind-zarr-utils", specifier = ">=0.21" },
     { name = "fsspec", specifier = ">=2024.6" },
     { name = "numpy", specifier = ">=2" },
     { name = "ome-zarr", specifier = ">=0.7" },
@@ -137,6 +137,15 @@ types = [
 ]
 
 [[package]]
+name = "aind-metadata-reader"
+version = "0.2.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/7f/91/5c21e8156f61874bc6b74d76d682977b4b45a4e8f20b37a932b72bef5cde/aind_metadata_reader-0.2.3.tar.gz", hash = "sha256:4e13dbe077d421012c2899b7754bc3315dd1b7400c7148657b5a1fc31fffd47b", size = 222802, upload-time = "2026-11-11T22:47:13.164Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e7/3a/9de34d30adca79d9cb9d1c8cce52f48a559783ca0b092c0b7c6fb563ab87/aind_metadata_reader-0.2.3-py3-none-any.whl", hash = "sha256:c49f859f9af7b03e3ed836eb5a87738465c0a3a595aac14a72925611dbdf99cf", size = 43147, upload-time = "2026-11-11T22:47:12.174Z" },
+]
+
+[[package]]
 name = "aind-registration-utils"
 version = "0.5.0"
 source = { registry = "https://pypi.org/simple" }
@@ -173,10 +182,11 @@ wheels = [
 
 [[package]]
 name = "aind-zarr-utils"
-version = "0.18.0"
+version = "0.21.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aind-anatomical-utils" },
+    { name = "aind-metadata-reader" },
     { name = "aind-registration-utils" },
     { name = "aind-s3-cache" },
     { name = "antspyx" },
@@ -188,9 +198,9 @@ dependencies = [
     { name = "s3fs" },
     { name = "simpleitk" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/75/90/216520a6d6330030c373088219c086096657ebe779ca0dbee80d56e0936a/aind_zarr_utils-0.18.0.tar.gz", hash = "sha256:898db68f942377279e25d36c4724a1fcadf5e7aeda5836b1be1780e56286d8a9", size = 566717, upload-time = "2026-10-26T00:20:02.363Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d0/18/772550cbf2669b274ca2bb82dc6a35c25edb2c2080e2dbc818844e44808a/aind_zarr_utils-0.21.0.tar.gz", hash = "sha256:81bc3724a6af2de04d7af63648e2a24fd2b95264fa7d1c44f1d8e84fbfe34fef", size = 599239, upload-time = "2026-11-13T00:31:46.479Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9e/a0/5c15ccadb7f133f2b2dccf3c151ac360d01c2733f4edab23f626fff75d96/aind_zarr_utils-0.18.0-py3-none-any.whl", hash = "sha256:4518cdccc085ace3f46b6a9d767f3a736fec2366abab6fa355ff7dc9cab6e56e", size = 67937, upload-time = "2026-10-26T00:20:01.265Z" },
+    { url = "https://files.pythonhosted.org/packages/32/68/76b9cb4454af24deb04b2df3fe9bedee050041dddfd1257ebc5e84ec4f70/aind_zarr_utils-0.21.0-py3-none-any.whl", hash = "sha256:52febb5b847b661c10bf8aa5321727a88d28bb3fbdc7847f1f3dff44713f1b67", size = 81324, upload-time = "2026-11-13T00:31:45.403Z" },
 ]
 
 [[package]]

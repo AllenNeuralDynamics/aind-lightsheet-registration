@@ -35,7 +35,10 @@ def write_pyramid(path, base: np.ndarray, n_levels: int, base_spacing_um=BASE_SP
     for k, data in enumerate(levels):
         root.create_array(name=str(k), data=data, chunks=(1, 1, 8, 8, 8))
         scale = [1.0, 1.0, *(s * 2**k for s in base_spacing_um)]
-        datasets.append({"path": str(k), "coordinateTransformations": [{"type": "scale", "scale": scale}]})
+        # a block mean's voxel center is the center of the base voxels it averages
+        translation = [0.0, 0.0, *(s * (2**k - 1) / 2 for s in base_spacing_um)]
+        transforms = [{"type": "scale", "scale": scale}, {"type": "translation", "translation": translation}]
+        datasets.append({"path": str(k), "coordinateTransformations": transforms})
     root.attrs["multiscales"] = [
         {
             "version": "0.4",
