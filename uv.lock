@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -94,16 +94,16 @@ types = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aind-registration-utils", specifier = ">=0.5,<0.6" },
+    { name = "aind-registration-utils", specifier = ">=0.5" },
     { name = "aind-zarr-utils", specifier = ">=0.18,<0.19" },
     { name = "fsspec", specifier = ">=2024.6" },
-    { name = "numpy", specifier = ">=2,<3" },
+    { name = "numpy", specifier = ">=2" },
     { name = "ome-zarr", specifier = ">=0.7" },
     { name = "pywavelets", specifier = ">=1.6" },
     { name = "s3fs", specifier = ">=2024.6" },
     { name = "scikit-image", specifier = ">=0.24" },
     { name = "scipy", specifier = ">=1.13" },
-    { name = "simpleitk", specifier = ">=2,<3" },
+    { name = "simpleitk", specifier = ">=2" },
     { name = "tyro", specifier = ">=0.9" },
     { name = "zarr", specifier = ">=3.1" },
 ]

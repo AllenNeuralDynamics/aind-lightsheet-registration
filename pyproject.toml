@@ -16,16 +16,16 @@ readme = "README.md"
 version = "0.7.0"
 
 dependencies = [
-    "aind-registration-utils>=0.5,<0.6",
+    "aind-registration-utils>=0.5",
     "aind-zarr-utils>=0.18,<0.19",
     "fsspec>=2024.6",
-    "numpy>=2,<3",
+    "numpy>=2",
     "ome-zarr>=0.7",
     "pywavelets>=1.6",
     "s3fs>=2024.6",
     "scikit-image>=0.24",
     "scipy>=1.13",
-    "simpleitk>=2,<3",
+    "simpleitk>=2",
     "tyro>=0.9",
     "zarr>=3.1",
 ]
